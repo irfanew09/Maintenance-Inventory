@@ -24,7 +24,7 @@
 ==========================================================================
  - Satu file HTML berisi CSS + markup + JavaScript murni (tanpa framework,
    tanpa library luar, tanpa server). Bisa dibuka offline di Chrome / Edge.
- - Data disimpan di localStorage browser (kunci wh_dash_v1). Cadangan dibuat
+ - Data disimpan di IndexedDB browser (database mims_data_db, kunci wh_dash_v1). Cadangan dibuat
    lewat Export JSON atau Auto Backup ke folder pilihan.
  - Seluruh tampilan dibuat dengan menyusun string HTML di fungsi berawalan "v"
    (vDash, vList, vReq, ...) lalu dimasukkan ke elemen #app oleh render().
@@ -128,12 +128,14 @@
 ==========================================================================
  5. KUNCI PENYIMPANAN BROWSER
 ==========================================================================
- localStorage  wh_dash_v1          : seluruh data S (JSON). JANGAN ganti nama
+ IndexedDB     mims_data_db/wh_dash_v1 : seluruh data S (JSON). JANGAN ganti nama
                                      kunci ini, data pengguna lama akan hilang.
  localStorage  wh_theme_v1         : 'light' | 'dark'
- localStorage  wh_session_v1       : username yang sedang login
+ sessionStorage wh_session_v1      : username yang sedang login (hilang saat tab ditutup)
  localStorage  mims_autobackup_cfg : pengaturan Auto Backup
  IndexedDB     mims_autobackup_db  : handle folder tujuan Auto Backup
+ localStorage  mims_fb_dirty / mims_fb_device : penanda perubahan belum terkirim & id perangkat (Firebase)
+ Firebase RTDB mims/<koleksi>      : items, tx, reqs, reqForms, reqArchive, opnames, pics, _sync
 
 ==========================================================================
  6. PERAN & HAK AKSES
@@ -251,16 +253,33 @@
 ==========================================================================
  1. Kata sandi tiga akun sama (123) dan tertulis di dalam kode; hanya cocok untuk
     pembatas peran di PC internal, bukan keamanan sungguhan.
- 2. Data hanya ada di browser tempat file dibuka. Wajib rutin backup.
+ 2. Data utama ada di IndexedDB browser DAN disinkronkan ke Firebase (bagian [22]). Tetap rutin backup.
  3. inventoryInsights() masih menghitung daftar "inactive" (barang tanpa
     pergerakan 90 hari) walau kartunya sudah tidak tampil di Dashboard.
- 4. Tidak ada sinkronisasi antar komputer / antar pengguna.
+ 4. Sinkronisasi antar komputer lewat Firebase: bila dua perangkat mengubah koleksi yang sama bersamaan,
+    yang terakhir menyimpan menang. Firebase memakai login anonim; batasi akses lewat Firebase Rules (auth != null).
  5. Penyimpanan localStorage memiliki batas kapasitas browser; lakukan Export
     JSON berkala, terutama sebelum Import atau perubahan data besar.
 
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 18 : Sinkronisasi Firebase Realtime Database untuk data utama (bagian [22]). Setiap save() mengirim
+             koleksi yang berubah ke mims/*, dan perubahan dari perangkat lain diterapkan otomatis. Login anonim
+             Firebase Auth. Demo stok Firebase lama dihapus. Lencana status sinkron di sidebar.
+ Update 17 : PIC Penerima (Suku Cadang Masuk) dan PIC Opname kini dipilih dari Master PIC, sama seperti
+             PIC Pengambilan (Suku Cadang Keluar). Jabatan PIC ikut tersimpan dan tampil di riwayat.
+ Update 16 : Sesi login disimpan di sessionStorage (hilang saat tab ditutup) dan dicek dengan
+             Object.hasOwn. Input angka format Indonesia (1.000 / 1.250,5) dibaca dengan benar. Impor JSON
+             membersihkan id dan memastikan tipe data, serta mengunduh cadangan data lama lebih dulu.
+             Banner merah tetap tampil bila data gagal tersimpan. Data rusak dicadangkan sebelum diganti
+             data contoh. Jam di cadangan mengikuti WIB. Ekspor CSV menetralkan rumus Excel. "1 Bulan Terakhir"
+             tidak lagi melompat ke awal bulan. Antrean pemeriksaan (barang masuk/keluar & opname) disimpan.
+             Logika mutasi untuk Excel dan PDF dipakai bersama (mutasiRows).
+ Update 15 : Penyimpanan data utama pindah dari localStorage ke IndexedDB (kapasitas jauh lebih besar;
+             data lama dipindahkan otomatis sekali). Hitungan Dashboard di-cache dan tidak lagi dihitung
+             ulang setiap render; daftar "inactive" yang tidak ditampilkan dihapus. Login aktif setelah data siap.
+             Animasi grafik tetap berlaku.
  Update 14 : Penambahan fitur List Daftar Pemeriksaan Barang di Stock Opname (dengan metode
              antrean/pemeriksaan yang sama seperti Suku Cadang Masuk dan Keluar) sehingga
              beberapa barang hasil hitung fisik dapat diperiksa terlebih dahulu sebelum
@@ -515,6 +534,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    <button id="themeBtn" class="btn s" onclick="toggleTheme()" style="width:100%;justify-content:center;font-weight:600">🌙 Mode Gelap</button>
    <div class="wib-badge"><span>🕒 Zona Waktu</span><b id="wibClock">WIB (UTC+7)</b></div>
    <div id="currentUserBadge" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between"></div>
+   <div id="fbStatus" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px">☁️ Firebase: menghubungkan…</div>
    <button class="btn s d" onclick="doLogout()" style="width:100%;justify-content:center">🚪 Keluar (Logout)</button>
   </div>
   <nav id="nav"></nav>
@@ -584,10 +604,18 @@ const uid=()=>Math.random().toString(36).slice(2,9);
 const r3=n=>Math.round((Number(n)||0)*1000)/1000;
 
 /** Membaca input angka desimal pengguna (menerima koma/titik), hasil 0 bila tidak valid. */
-const parseDec=v=>{const n=Number(String(v==null?'':v).replace(',','.').replace(/[^\d.]/g,''));return isFinite(n)?n:0};
+/** Membaca angka input format Indonesia. "1.000" & "1.000.000" = ribuan; "1.250,5" & "1,5" = desimal; separator di akhir diabaikan. */
+function parseDec(v){
+ let s=String(v==null?'':v).replace(/rp/ig,'').replace(/\s/g,'').replace(/[.,]+$/,'');
+ const seps=(s.match(/[.,]/g)||[]);
+ if(seps.length&&/^-?\d{1,3}([.,]\d{3})+$/.test(s)&&seps.every(c=>c===seps[0])){s=s.replace(/[.,]/g,'')}
+ else{const li=Math.max(s.lastIndexOf(','),s.lastIndexOf('.'));if(li>=0)s=s.slice(0,li).replace(/[.,]/g,'')+'.'+s.slice(li+1).replace(/[.,]/g,'')}
+ const n=Number(s.replace(/[^\d.-]/g,''));
+ return isFinite(n)?n:0;
+}
 
 /** Dipanggil dari oninput: membersihkan field angka agar hanya berisi digit dan satu pemisah desimal. */
-function cleanDec(el){let v=String(el.value).replace(/[^\d.,]/g,'');const m=v.search(/[.,]/);if(m>=0)v=v.slice(0,m+1)+v.slice(m+1).replace(/[.,]/g,'');if(el.value!==v)el.value=v}
+function cleanDec(el){const v=String(el.value).replace(/[^\d.,]/g,'');if(el.value!==v)el.value=v}
 
 /** Membaca angka format Indonesia/Excel ("1.250,50", "Rp 1.000") menjadi Number. Dipakai saat Import CSV. */
 function idNum(s){
@@ -784,10 +812,11 @@ const TABS=[
 ];
 
 /* ==========================================================================
-   [06] PENYIMPANAN DATA (localStorage)
+   [06] PENYIMPANAN DATA (IndexedDB)
    --------------------------------------------------------------------------
    Tujuan   : Memuat, menyimpan, dan menginisialisasi data S.
-   Kunci    : wh_dash_v1 (JANGAN diganti, data lama akan hilang).
+   Kunci    : wh_dash_v1 di IndexedDB (JANGAN diganti, data lama akan hilang).
+   Cache    : memoBy() menyimpan hitungan turunan dashboard; dataVer naik di setiap save().
    Alur     : boot -> load(): ada data valid? pakai & normalisasi : seed() data contoh -> save().
               Setiap perubahan data -> save() (juga memicu jadwal Auto Backup).
    Migrasi  : Koleksi baru di S wajib dinormalisasi di load() agar data lama tetap terbaca.
@@ -816,6 +845,7 @@ function seed(){
  S.reqArchive=[];
  const hrs=['07:30','09:15','11:20','13:45','15:10','16:30'];
  const pics=['Andi (Mekanik)','Budi (Elektrik)','Rian (Welding)','Dedi (Utility)','Hendra (Maintenance)'];
+ S.pics=pics.map((n,k)=>({id:'PIC-'+(k+1),name:n,title:(n.match(/\((.*)\)/)||[])[1]||'',active:true,createdBy:'contoh'}));
  for(let d=6;d>=0;d--){
   for(let k=0;k<3;k++){
    const it=S.items[(d*3+k*5)%12];
@@ -839,15 +869,61 @@ function seed(){
  openFormId=S.reqForms[0].id;
 }
 
+/* ---- Penyimpanan IndexedDB ----
+   Data S disimpan di IndexedDB (database mims_data_db, store kv, kunci wh_dash_v1).
+   Kapasitasnya jauh lebih besar daripada localStorage. Data lama dari localStorage dipindahkan
+   otomatis satu kali saat file pertama kali dibuka, lalu entri lama dihapus. */
+const DATA_DB='mims_data_db', DATA_STORE='kv', DATA_KEY='wh_dash_v1', LEGACY_KEY='wh_dash_v1';
+let dataDbP=null;                 // koneksi IndexedDB, dibuka sekali
+let saveChain=Promise.resolve();  // antrean penulisan agar urutannya tetap
+let dataVer=0;                    // naik setiap kali S berubah; dipakai untuk cache hitungan turunan
+
+/** Membuka (sekali) koneksi ke IndexedDB. */
+function dataDb(){
+ if(!dataDbP)dataDbP=new Promise((res,rej)=>{
+  if(!('indexedDB' in window))return rej(new Error('IndexedDB tidak didukung browser ini'));
+  const req=indexedDB.open(DATA_DB,1);
+  req.onupgradeneeded=()=>req.result.createObjectStore(DATA_STORE);
+  req.onsuccess=()=>res(req.result);
+  req.onerror=()=>rej(req.error);
+ });
+ return dataDbP;
+}
+
+/** Membaca teks JSON data utama dari IndexedDB. */
+function dataGet(){
+ return dataDb().then(db=>new Promise((res,rej)=>{
+  const q=db.transaction(DATA_STORE,'readonly').objectStore(DATA_STORE).get(DATA_KEY);
+  q.onsuccess=()=>res(q.result);
+  q.onerror=()=>rej(q.error);
+ }));
+}
+
+/** Menulis teks JSON data utama ke IndexedDB. */
+function dataPut(json,key=DATA_KEY){
+ return dataDb().then(db=>new Promise((res,rej)=>{
+  const tx=db.transaction(DATA_STORE,'readwrite');
+  tx.objectStore(DATA_STORE).put(json,key);
+  tx.oncomplete=()=>res(true);
+  tx.onerror=()=>rej(tx.error);
+  tx.onabort=()=>rej(tx.error||new Error('Penulisan dibatalkan'));
+ }));
+}
+
 /**
- * Membaca S dari localStorage, menormalisasi koleksi yang belum ada (reqs, reqForms, reqArchive, opnames, pics, meta),
- * dan membuat daftar PIC awal dari riwayat bila kosong. Data rusak -> dihapus lalu seed().
+ * Membaca S dari IndexedDB (atau dari localStorage bila ini pertama kali pindah), menormalisasi koleksi yang belum ada
+ * (reqs, reqForms, reqArchive, opnames, pics, meta), dan membuat daftar PIC awal dari riwayat bila kosong.
+ * Data rusak atau belum ada -> seed().
  */
-function load(){
+async function load(){
+ let raw=null, fromLegacy=false;
+ try{raw=await dataGet()}catch(e){console.error('[MIMS] Gagal membaca IndexedDB:',e)}
+ if(!raw){
+  try{raw=localStorage.getItem(LEGACY_KEY);fromLegacy=!!raw}catch(e){}
+ }
  try{
-  const r=localStorage.getItem('wh_dash_v1');
-  if(r){
-   const saved=JSON.parse(r);
+  if(raw){
+   const saved=typeof raw==='string'?JSON.parse(raw):raw;
    if(saved&&Array.isArray(saved.items)&&Array.isArray(saved.tx)){
     if(!Array.isArray(saved.reqs))saved.reqs=[];
     if(!Array.isArray(saved.reqForms))saved.reqForms=[];
@@ -857,27 +933,52 @@ function load(){
     if(!saved.meta||typeof saved.meta!=='object')saved.meta={};
     S=saved;
     if(!S.pics.length){const old=[...new Set((S.tx||[]).filter(t=>t.type==='out'&&t.pic).map(t=>t.pic))];S.pics=old.map((name,i)=>({id:'PIC-'+(i+1),name,title:'Jabatan belum diisi',active:true,createdBy:'migrasi'}));}
+    dataVer++;
+    if(fromLegacy){
+     await dataPut(JSON.stringify(S))
+      .then(()=>{try{localStorage.removeItem(LEGACY_KEY)}catch(e){}})
+      .catch(e=>console.error('[MIMS] Pemindahan data lama gagal:',e));
+    }
     return;
    }
-   localStorage.removeItem('wh_dash_v1');
   }
- }catch(e){
-  try{localStorage.removeItem('wh_dash_v1')}catch(ignore){}
+ }catch(e){console.error('[MIMS] Data tersimpan tidak bisa dibaca:',e)}
+ if(raw){
+  try{
+   await dataPut(typeof raw==='string'?raw:JSON.stringify(raw),'cadangan_rusak_'+Date.now());
+   toast('Data lama tidak terbaca dan disimpan sebagai cadangan di browser.');
+  }catch(e){console.error('[MIMS] Cadangan data rusak gagal:',e)}
  }
  seed();
+ dataVer++;
  save();
 }
 
-/** Menyimpan seluruh S ke localStorage lalu menjadwalkan Auto Backup. Panggil setiap selesai mengubah data. */
-function save(){
- let stored=false;
- try{localStorage.setItem('wh_dash_v1',JSON.stringify(S));stored=true}
- catch(e){
-  console.error('[MIMS] Gagal menyimpan data ke localStorage:',e);
-  if(typeof toast==='function')toast('Gagal menyimpan ke penyimpanan browser. Ekspor backup JSON dan periksa ruang penyimpanan.');
+/** Menyimpan seluruh S ke IndexedDB lalu menjadwalkan Auto Backup. Panggil setiap selesai mengubah data. */
+/** Banner merah tetap di atas layar bila data terakhir gagal tersimpan; hilang setelah penyimpanan berikutnya berhasil. */
+function setSaveState(ok){
+ let el=document.getElementById('saveErr');
+ if(ok){if(el)el.remove();return}
+ if(!el){
+  el=document.createElement('div');el.id='saveErr';el.setAttribute('role','alert');
+  el.style.cssText='position:fixed;top:0;left:0;right:0;z-index:2000;background:var(--er);color:#fff;padding:10px 16px;font-weight:600;text-align:center;font-size:13px';
+  el.textContent='⚠️ Data terakhir TIDAK tersimpan. Ekspor backup JSON sekarang dan periksa ruang penyimpanan browser.';
+  document.body.appendChild(el);
  }
+}
+
+/** Menyimpan seluruh S ke IndexedDB lalu menjadwalkan Auto Backup. Panggil setiap selesai mengubah data. */
+function save(){
+ dataVer++;
+ const json=JSON.stringify(S);
+ saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
+  console.error('[MIMS] Gagal menyimpan data:',e);
+  setSaveState(false);
+ });
+ qSave();
  try{abSchedule()}catch(e){console.error('[MIMS] Gagal menjadwalkan backup:',e)}
- return stored;
+ try{window.mimsFbPush&&window.mimsFbPush()}catch(e){console.error('[MIMS] Firebase:',e)}
+ return true;
 }
 
 /* ==========================================================================
@@ -917,7 +1018,23 @@ const unitOf=id=>{const i=findById(id);return i?i.unit:''};
 const actor=()=>({user:'User',supervisor:'Supervisor',admin:'Admin'})[currentUser]||'-';
 
 /** Total jumlah barang yang sudah ada di Form PR berjalan namun belum diterima. */
-const pendQty=id=>(S.reqForms||[]).reduce((a,f)=>a+(f.items||[]).filter(x=>x.itemId===id&&!x.received).reduce((s,x)=>s+(Number(x.qty)||0),0),0);
+/** Cache hitungan turunan: dihitung ulang hanya bila data (dataVer) atau kuncinya berubah. */
+const memoStore={};
+function memoBy(name,key,fn){
+ const k=dataVer+'|'+key, c=memoStore[name];
+ if(c&&c.k===k)return c.r;
+ const r=fn();
+ memoStore[name]={k,r};
+ return r;
+}
+
+/** Peta kode barang -> jumlah dalam Form PR berjalan yang belum diterima. Dihitung sekali per perubahan data. */
+const pendMap=()=>memoBy('pend','',()=>{
+ const m=new Map();
+ (S.reqForms||[]).forEach(f=>(f.items||[]).forEach(x=>{if(!x.received)m.set(x.itemId,(m.get(x.itemId)||0)+(Number(x.qty)||0))}));
+ return m;
+});
+const pendQty=id=>pendMap().get(id)||0;
 
 /** HTML lencana "+N dalam PR" bila barang sedang dipesan. */
 const pendBadge=i=>{const q=pendQty(i.id);return q>0?` <span class="b" title="Sudah ada dalam PR yang sedang diproses">📦 +${num(q)} dalam PR</span>`:''};
@@ -939,7 +1056,7 @@ function itemUsageRef(id){
               catatan dokumentasi bagian 10).
    Tampilan : Overlay #loginOverlay (markup di <body>). Form #loginForm dikirim lewat submit
               agar klik tombol dan tombol Enter sama-sama bekerja.
-   Sesi     : username disimpan di localStorage wh_session_v1; checkSession() memulihkannya saat boot.
+   Sesi     : username disimpan di sessionStorage wh_session_v1; checkSession() memulihkannya saat boot.
    Cara ubah: Kata sandi -> pengecekan p!=='123' di doLogin(). Akun/peran -> ACCOUNTS (bagian 05).
    ========================================================================== */
 
@@ -951,13 +1068,13 @@ function doLogin(){
  const userEl=$('#loginUser'),passEl=$('#loginPass'),err=$('#loginErr');
  const u=(userEl?.value||'').trim().toLowerCase();
  const p=(passEl?.value||'').trim();
- if(!ACCOUNTS[u]||p!=='123'){
+ if(!Object.hasOwn(ACCOUNTS,u)||p!=='123'){
   if(err){err.textContent='Username atau password salah. Untuk akun uji coba, gunakan user / 123.';err.style.display='block'}
   passEl?.focus();return false;
  }
  if(err)err.style.display='none';
  currentUser=u;
- try{localStorage.setItem('wh_session_v1',u)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
+ try{sessionStorage.setItem('wh_session_v1',u)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
  const acc=ACCOUNTS[u];
  if(!acc.tabs.includes(V))V='dash';
  try{
@@ -969,7 +1086,7 @@ function doLogin(){
   return true;
  }catch(e){
   currentUser=null;
-  try{localStorage.removeItem('wh_session_v1')}catch(ignore){}
+  try{sessionStorage.removeItem('wh_session_v1')}catch(ignore){}
   $('#loginOverlay').style.display='flex';
   if(err){err.textContent='Login diterima, tetapi dashboard gagal dibuka: '+String(e?.message||e);err.style.display='block'}
   console.error('MIMS login/render error:',e);
@@ -980,7 +1097,7 @@ function doLogin(){
 /** Menghapus sesi, mengosongkan form, menampilkan kembali overlay login. */
 function doLogout(){
  currentUser=null;
- try{localStorage.removeItem('wh_session_v1')}catch(e){}
+ try{sessionStorage.removeItem('wh_session_v1')}catch(e){}
  $('#loginOverlay').style.display='flex';
  $('#loginUser').value='';
  $('#loginPass').value='';
@@ -989,8 +1106,8 @@ function doLogout(){
 /** Saat boot: bila ada sesi tersimpan yang valid, lewati login; jika tidak tampilkan overlay. */
 function checkSession(){
  try{
-  const saved=localStorage.getItem('wh_session_v1');
-  if(saved&&ACCOUNTS[saved]){
+  const saved=sessionStorage.getItem('wh_session_v1');
+  if(saved&&Object.hasOwn(ACCOUNTS,saved)){
    currentUser=saved;
    $('#loginOverlay').style.display='none';
    const acc=ACCOUNTS[saved];
@@ -1146,7 +1263,8 @@ function setChartPeriod(p){chartPeriod=p;render()}
  * 1 hari = per jam 07.00-17.00; 7 hari = per hari; 30 hari = per minggu. Transaksi isInit/isAdj tidak dihitung.
  * @returns {title, html}
  */
-function dashboardChart(){
+function dashboardChart(){return memoBy('chart',chartPeriod+'|'+today(),dashboardChartRaw)}
+function dashboardChartRaw(){
  const todayKey=today(),rows=[];let title='',legacy=0;
  if(chartPeriod==='1'){
   title='Penerimaan & Pemakaian Hari Ini (Jam Kerja 07:00 – 17:00 WIB)';
@@ -1186,15 +1304,19 @@ function backupReminderHtml(){
 }
 
 /**
- * Analisis pemakaian dari S.tx: "usage" = 8 barang paling sering keluar; "inactive" = barang tanpa pergerakan 90 hari.
- * CATATAN: "inactive" sudah tidak ditampilkan di Dashboard (lihat dokumentasi bagian 10).
+ * Analisis pemakaian dari S.tx: "usage" = 8 barang paling sering keluar. Dihitung dalam satu kali pemindaian S.tx dan di-cache.
  */
 function inventoryInsights(){
- const cutoff=dateOffset(today(),-90);
- const movement=S.tx.filter(t=>!t.isInit&&!t.isAdj&&(t.type==='in'||t.type==='out'));
- const inactive=S.items.map(i=>{const tx=movement.filter(t=>t.item===i.id).sort((a,b)=>b.date.localeCompare(a.date));return {i,last:tx[0]?.date||'',count:tx.length};}).filter(x=>!x.last||x.last<cutoff).sort((a,b)=>(a.last||'0000').localeCompare(b.last||'0000'));
- const usage=S.items.map(i=>({i,count:movement.filter(t=>t.item===i.id&&t.type==='out').length,qty:movement.filter(t=>t.item===i.id&&t.type==='out').reduce((a,t)=>a+(Number(t.qty)||0),0)})).filter(x=>x.count>0).sort((a,b)=>b.count-a.count||b.qty-a.qty).slice(0,8);
- return {inactive,usage};
+ return memoBy('insights','',()=>{
+  const outCnt=new Map(), outQty=new Map();
+  S.tx.forEach(t=>{
+   if(t.isInit||t.isAdj||t.type!=='out')return;
+   outCnt.set(t.item,(outCnt.get(t.item)||0)+1);
+   outQty.set(t.item,(outQty.get(t.item)||0)+(Number(t.qty)||0));
+  });
+  const usage=S.items.map(i=>({i,count:outCnt.get(i.id)||0,qty:outQty.get(i.id)||0})).filter(x=>x.count>0).sort((a,b)=>b.count-a.count||b.qty-a.qty).slice(0,8);
+  return {usage};
+ });
 }
 
 /** Kartu "Barang Paling Sering Dipakai" (peringkat berdasarkan jumlah kali keluar). */
@@ -1270,7 +1392,7 @@ function vDash(){
  const critAll=[...out,...low].filter(i=>i.notify!==false);
  const mutedCnt=[...out,...low].filter(i=>i.notify===false).length;
  const alert=critAll.slice(0,8).map(i=>`<div class="row"><span><b>${esc(i.sku)}</b> · ${esc(i.name)}<small class="mt">Rak ${esc(i.loc)} · Min: ${num(i.min)} ${esc(i.unit)}</small></span><span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><label class="chk-wrap" title="Hapus centang untuk mematikan notifikasi & mengecualikan dari Auto Input Request" style="font-weight:500;color:var(--mt);margin-right:2px"><input type="checkbox" checked onchange="toggleItemNotify('${i.id}',this.checked)"><span>Notif</span></label><b>${num(i.stock)}</b> ${badge(i)}${pendBadge(i)} <button class="btn s p" title="Buat Request Pembelian Sparepart" onclick="quickReq('${i.id}')">＋ Restock</button></span></div>`).join('')||'<div class="mt">Semua stok aman 🎉 (atau notifikasi stok kritis dimatikan)</div>';
- const rec=[...S.tx].reverse().slice(0,7).map(t=>`<div class="row"><span>${esc(nm(t.item))}<small class="mt">${t.date}${t.time?' · '+t.time+' WIB':''}${t.pic?' · 👤 '+esc(t.pic):''}${t.note?' · '+esc(t.note):''}</small></span><b style="color:var(--${t.type==='in'?'ok':'er'})">${t.type==='in'?'+':'−'}${num(t.qty)} ${esc(unitOf(t.item))}</b></div>`).join('')||'<div class="mt">Belum ada transaksi</div>';
+ const rec=[...S.tx].reverse().slice(0,7).map(t=>`<div class="row"><span>${esc(nm(t.item))}<small class="mt">${esc(t.date)}${t.time?' · '+esc(t.time)+' WIB':''}${t.pic?' · 👤 '+esc(t.pic):''}${t.note?' · '+esc(t.note):''}</small></span><b style="color:var(--${t.type==='in'?'ok':'er'})">${t.type==='in'?'+':'−'}${num(t.qty)} ${esc(unitOf(t.item))}</b></div>`).join('')||'<div class="mt">Belum ada transaksi</div>';
  const kp=(l,v,s,act)=>`<div class="card kp" onclick="${act}" title="Klik untuk melihat detail"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
  
  return `<div class="page-head"><div><h2>Dashboard Maintenance</h2><p class="page-subtitle">Ringkasan kondisi persediaan dan aktivitas spare part (Peran: <b>${ACCOUNTS[currentUser].name}</b>)</p></div><div class="page-actions"><button class="btn" onclick="go('req')">🛒 Request (${(S.reqs||[]).length})</button><button class="btn" onclick="go('proc')">⏳ Proses Request (${(S.reqForms||[]).length})</button>${currentUser!=='supervisor'?`<button class="btn p" onclick="go('in')">＋ Barang Masuk</button><button class="btn d" onclick="go('out')">－ Barang Keluar</button>`:''}</div></div>
@@ -1482,14 +1604,31 @@ const LIM={rec:100,in:100,out:100};
 
 /** Daftar pemeriksaan transaksi sementara; stok belum berubah sampai tombol konfirmasi ditekan. */
 const TXQ={in:[],out:[]};
+/* Antrean pemeriksaan (TXQ & OPQ) disimpan di localStorage agar tidak hilang saat halaman dimuat ulang. */
+const QUEUE_KEY='wh_queue_v1';
+function qSave(){try{localStorage.setItem(QUEUE_KEY,JSON.stringify({txq:TXQ,opq:OPQ}))}catch(e){}}
+function qLoad(){
+ try{
+  const v=JSON.parse(localStorage.getItem(QUEUE_KEY)||'null');
+  if(!v)return;
+  if(v.txq&&Array.isArray(v.txq.in)&&Array.isArray(v.txq.out)){TXQ.in=v.txq.in;TXQ.out=v.txq.out}
+  if(Array.isArray(v.opq))OPQ=v.opq;
+ }catch(e){}
+}
 
 /** Rentang tanggal [dari, sampai] aktif untuk riwayat sesuai RG. */
+/** Tanggal WIB n bulan yang lalu. Bila tanggal tidak ada di bulan tujuan, dipakai hari terakhir bulan itu (31 Maret -> 28/29 Februari). */
+function monthsAgo(n){
+ const [y,m,d]=today().split('-').map(Number);
+ const last=new Date(Date.UTC(y,m-1-n+1,0)).getUTCDate();
+ return new Date(Date.UTC(y,m-1-n,Math.min(d,last))).toISOString().slice(0,10);
+}
+
 function rng(ty){
  const r=RG[ty];
  if(r.p==='all')return['',''];
  if(r.p==='c'){let a=r.from,b=r.to;if(a&&b&&a>b){const z=a;a=b;b=z}return[a,b]}
- const d=new Date();d.setMonth(d.getMonth()-(+r.p));
- return[wibDate(d),today()];
+ return[monthsAgo(+r.p),today()];
 }
 
 /** Daftar transaksi suatu jenis dalam rentang RG, terbaru di atas. */
@@ -1541,7 +1680,7 @@ function vTx(ty){
  const hAll=hist(ty);
  const rows=hAll.slice(0,LIM[ty]).map(t=>{
   const i=findById(t.item)||{};
-  return `<tr><td>${t.date}<small>${t.time?t.time+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b> · ${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Terima':'Pakai'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td><button class="btn s d" onclick="delTx('${t.id}',()=>drawHist('${ty}'))">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button></td></tr>`;
+  return `<tr><td>${esc(t.date)}<small>${t.time?esc(t.time)+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b> · ${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Terima':'Pakai'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td><button class="btn s d" onclick="delTx('${t.id}',()=>drawHist('${ty}'))">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button></td></tr>`;
  }).join('')||'<tr><td colspan="7" class="mt">Belum ada transaksi</td></tr>';
  const moreRow=hAll.length>LIM[ty]?`<tr><td colspan="7" class="c"><button class="btn s" onclick="LIM['${ty}']+=100;drawHist('${ty}')">Tampilkan 100 lagi (${LIM[ty]} dari ${hAll.length})</button></td></tr>`:'';
  return `<div class="page-head"><div><h2>${ty==='in'?'➕ Suku Cadang Masuk (Restock)':'➖ Suku Cadang Keluar (Pemakaian)'}</h2><p class="page-subtitle">${ty==='in'?'Tambahkan beberapa sparepart ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk menambah stok.':'Tambahkan beberapa sparepart beserta PIC ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk mengurangi stok.'}</p></div>${ty==='in'?`<div class="page-actions"><button class="btn" onclick="go('proc')">⏳ Cek Penerimaan dari Proses Request</button>${currentUser==='user'?'<button class="btn" onclick="go(\'master\')">+ Buat Master Baru</button>':''}</div>`:''}</div>
@@ -1549,7 +1688,7 @@ function vTx(ty){
   <div><label>Suku Cadang (ketik nama atau kode) *</label><input id="t_item" list="tl" placeholder="mis. bearing atau MEK-001" autocomplete="off" oninput="txInfo()"><datalist id="tl">${S.items.map(i=>`<option value="${esc(i.sku)} · ${esc(i.name)}">Stok: ${num(i.stock)} ${esc(i.unit)} (${stat(i)[0]})</option>`).join('')}</datalist><div id="t_info" class="mt" style="font-size:12px;margin-top:4px"></div></div>
   <input id="t_type" type="hidden" value="${ty}">
   <div><label>Jumlah *</label><input id="t_qty" type="text" inputmode="decimal" oninput="cleanDec(this)" placeholder="Ketik jumlah…"></div>
-  <div><label>${ty==='out'?'PIC Pengambilan Barang *':'PIC Penerima Barang'}</label>${ty==='out'?`<select id="t_pic"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Admin hanya dapat memilih PIC yang telah didaftarkan User/Supervisor.</small>`:`<input id="t_pic" list="pic_list" placeholder="Nama penerima di gudang…" autocomplete="off"><datalist id="pic_list">${[...new Set([...(S.pics||[]).map(p=>p.name),...S.tx.map(t=>t.pic).filter(Boolean)])].map(p=>`<option value="${esc(p)}">`).join('')}</datalist>`}</div>
+  <div><label>${ty==='out'?'PIC Pengambilan Barang *':'PIC Penerima Barang *'}</label>${`<select id="t_pic"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Admin hanya dapat memilih PIC yang telah didaftarkan User/Supervisor.</small>`}</div>
   <div><label>Catatan (No. PO / Work Order / Mesin)</label><input id="t_note" placeholder="${ty==='in'?'Contoh: PO-2026-089 dari Supplier':'Contoh: WO-104 Perbaikan Mesin Welding Line 2'}"></div>
   <div><label>Tanggal (WIB)</label><input id="t_date" type="date" value="${today()}"></div>
   <div><label>Waktu (WIB)</label><input id="t_time" type="time" value="${wibTime()}"></div>
@@ -1613,19 +1752,19 @@ function addTxToQueue(){
  const pic=($('#t_pic')?.value||'').trim();
  if(!it)return toast('Suku cadang tidak ditemukan, pilih dari daftar yang muncul.');
  if(!(q>0))return toast('Isi jumlah lebih dari 0.');
- if(type==='out'&&!pic)return toast('Pilih PIC Pengambilan Barang dari daftar.');
- if(type==='out'&&!findPic(pic))return toast('PIC tidak valid. Pilih PIC yang terdaftar pada Master PIC.');
+ if(!pic)return toast(type==='out'?'Pilih PIC Pengambilan Barang dari daftar.':'Pilih PIC Penerima Barang dari daftar.');
+ if(!findPic(pic))return toast('PIC tidak valid. Pilih PIC yang terdaftar pada Master PIC.');
  if(type==='out'){
   const queued=TXQ.out.filter(x=>x.item===it.id).reduce((s,x)=>s+x.qty,0);
   if(queued+q>it.stock)return toast('Jumlah melebihi stok tersedia setelah memperhitungkan barang yang sudah ada di daftar. Stok: '+num(it.stock)+' '+it.unit+'.');
  }
  TXQ[type].push({
   item:it.id,qty:q,pic:pic||(type==='in'?'Admin Gudang':'-'),
-  picTitle:type==='out'?(findPic(pic)?.title||''):'',
+  picTitle:findPic(pic)?.title||'',
   by:currentUser,note:$('#t_note').value.trim(),
   date:$('#t_date').value||today(),time:$('#t_time')?.value||wibTime()
  });
- toast('Barang ditambahkan ke daftar pemeriksaan. Stok belum berubah.');
+ qSave();toast('Barang ditambahkan ke daftar pemeriksaan. Stok belum berubah.');
  $('#t_item').value='';$('#t_qty').value='';$('#t_note').value='';
  if($('#t_info'))$('#t_info').innerHTML='';
  drawTxQueue(type);
@@ -1645,6 +1784,7 @@ function clearTxQueue(ty){
 
 /** Gambar ulang panel daftar saja; formulir dan isian yang sedang diketik tidak terganggu. */
 function drawTxQueue(ty){
+ qSave();
  const el=$('#txQueue');if(el)el.innerHTML=txQueueHtml(ty);
 }
 
@@ -1744,7 +1884,7 @@ function vRecent(){
  });
  const rows=all.slice(0,LIM.rec).map(t=>{
   const i=findById(t.item)||{};
-  return `<tr><td>${t.date}<small>${t.time?t.time+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b></td><td>${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Masuk':'Keluar'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td>${currentUser!=='supervisor'?`<button class="btn s d" onclick="delTx('${t.id}',render)">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button>`:'<small class="mt">Hanya Lihat</small>'}</td></tr>`;
+  return `<tr><td>${esc(t.date)}<small>${t.time?esc(t.time)+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b></td><td>${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Masuk':'Keluar'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td>${currentUser!=='supervisor'?`<button class="btn s d" onclick="delTx('${t.id}',render)">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button>`:'<small class="mt">Hanya Lihat</small>'}</td></tr>`;
  }).join('')||'<tr><td colspan="8" class="mt">Tidak ada transaksi yang cocok</td></tr>';
  const moreRow=all.length>LIM.rec?`<tr><td colspan="8" class="c"><button class="btn s" onclick="LIM.rec+=100;drawRecentBody()">Tampilkan 100 lagi (${LIM.rec} dari ${all.length})</button></td></tr>`:'';
  return `<div class="page-head"><div><h2>Transaksi Terakhir</h2><p class="page-subtitle">Pantau seluruh histori penerimaan, pemakaian, PIC pengambil, dan batalkan transaksi jika salah input.</p></div><div class="page-actions"><button class="btn" onclick="expCSV('tx')">📥 Export Transaksi (.csv)</button></div></div>
@@ -2673,7 +2813,7 @@ function vOpname(){
   <td class="r">${num(o.systemQty)}</td>
   <td class="r">${num(o.actualQty)}</td>
   <td class="r"><b style="color:${o.diff===0?'var(--ok)':o.diff>0?'var(--ok)':'var(--er)'}">${o.diff>0?'+':''}${num(o.diff)}</b></td>
-  <td>${esc(o.pic||'-')}</td>
+  <td>${esc(o.pic||'-')}${o.picTitle?`<small>${esc(o.picTitle)}</small>`:''}</td>
   <td>${esc(o.note||'-')}</td>
   <td>${currentUser!=='supervisor'?`<button class="btn s d" onclick="delOpnameRecord('${o.id}')">${pend==='opn_'+o.id?'Yakin Hapus?':'Hapus'}</button>`:'<small class="mt">Hanya Lihat</small>'}</td>
  </tr>`).join('');
@@ -2682,7 +2822,7 @@ function vOpname(){
   <div><label>Barang *</label><input id="op_item" list="op_dl" placeholder="Cari SKU / nama barang" autocomplete="off" onchange="opnameInfo()" oninput="opnameInfo()"><datalist id="op_dl">${S.items.map(i=>`<option value="${esc(i.sku+' · '+i.name)}">Stok Sistem: ${num(i.stock)} ${esc(i.unit)}</option>`).join('')}</datalist><div id="op_hint" class="mt" style="font-size:12px;margin-top:4px">Pilih barang untuk melihat stok sistem.</div></div>
   <div><label>Stok Sistem Saat Ini</label><input id="op_system" readonly placeholder="Otomatis"></div>
   <div><label>Stok Fisik (Hasil Hitung) *</label><input id="op_actual" type="text" inputmode="decimal" oninput="cleanDec(this)" placeholder="Ketik hasil hitung fisik…" onkeydown="if(event.key==='Enter')addOpnameToQueue()"></div>
-  <div><label>PIC Opname *</label><input id="op_pic" list="op_pic_dl" placeholder="Nama petugas opname" autocomplete="off"><datalist id="op_pic_dl">${[...new Set([...(S.pics||[]).map(p=>p.name),...(S.opnames||[]).map(o=>o.pic).filter(Boolean)])].map(p=>`<option value="${esc(p)}">`).join('')}</datalist></div>
+  <div><label>PIC Opname *</label><select id="op_pic"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Pilih dari Master PIC. Admin hanya dapat memilih PIC yang telah didaftarkan User/Supervisor.</small></div>
   <div style="grid-column:1/-1"><label>Keterangan (Lokasi / Kondisi / Alasan Selisih)</label><input id="op_note" placeholder="Contoh: Rak A-01 sesuai fisik / 1 pcs rusak korosi" onkeydown="if(event.key==='Enter')addOpnameToQueue()"></div>
  </div>
  <div style="margin-top:16px"><button class="btn p" onclick="addOpnameToQueue()">＋ Tambahkan ke Daftar Pemeriksaan Opname</button></div></div>
@@ -2706,7 +2846,7 @@ function opnameQueueHtml(){
    <td class="r">${num(sys)} ${esc(unit)}</td>
    <td class="r" style="width:140px"><input type="text" inputmode="decimal" value="${esc(actual)}" oninput="cleanDec(this)" style="text-align:right;padding:5px 8px;max-width:95px" onchange="updOpnameQueueActual(${n},this.value)"> ${esc(unit)}</td>
    <td class="r"><b style="color:${diff===0?'var(--ok)':diff>0?'var(--ok)':'var(--er)'}">${diff>0?'+':''}${num(diff)}</b> ${esc(unit)}${diff===0?'<small>Sesuai</small>':`<small>${diff>0?'Lebih':'Kurang'}</small>`}</td>
-   <td>${esc(x.pic||'-')}<small>${esc(x.date||today())}</small></td>
+   <td>${esc(x.pic||'-')}${x.picTitle?`<small>${esc(x.picTitle)}</small>`:''}<small>${esc(x.date||today())}</small></td>
    <td><input type="text" placeholder="Keterangan (opsional)" value="${esc(x.note||'')}" style="padding:5px 8px;min-width:140px" onchange="updOpnameQueueNote(${n},this.value)"></td>
    <td><button class="btn s d" onclick="removeOpnameQueueItem(${n})">Hapus</button></td>
   </tr>`;
@@ -2727,6 +2867,7 @@ function opnameQueueHtml(){
 
 /** Gambar ulang panel daftar pemeriksaan opname saja tanpa mengganggu isian form. */
 function drawOpnameQueue(){
+ qSave();
  const el=$('#opQueue');if(el)el.innerHTML=opnameQueueHtml();
 }
 
@@ -2740,7 +2881,8 @@ function addOpnameToQueue(){
  const note=($('#op_note')?.value||'').trim();
  if(!i)return toast('Pilih barang yang valid dari daftar.');
  if(rawActual===''||!Number.isFinite(actual)||actual<0)return toast('Isi stok fisik dengan angka 0 atau lebih.');
- if(!pic)return toast('Isi nama PIC stock opname.');
+ if(!pic)return toast('Pilih PIC Opname dari daftar.');
+ if(!findPic(pic))return toast('PIC tidak valid. Pilih PIC yang terdaftar pada Master PIC.');
  const before=r3(Number(i.stock)||0);
  const exIdx=OPQ.findIndex(x=>x.itemId===i.id);
  if(exIdx>=0){
@@ -2748,15 +2890,16 @@ function addOpnameToQueue(){
   OPQ[exIdx].actualQty=actual;
   OPQ[exIdx].diff=r3(actual-before);
   OPQ[exIdx].pic=pic;
+  OPQ[exIdx].picTitle=findPic(pic)?.title||'';
   if(note)OPQ[exIdx].note=note;
   OPQ[exIdx].date=today();
   toast(`Data opname "${i.name}" di daftar pemeriksaan diperbarui (Stok fisik: ${num(actual)} ${i.unit}).`);
  }else{
   OPQ.push({
    id:uid(),date:today(),itemId:i.id,sku:i.sku,name:i.name,unit:i.unit,
-   systemQty:before,actualQty:actual,diff:r3(actual-before),pic,note,by:currentUser
+   systemQty:before,actualQty:actual,diff:r3(actual-before),pic,picTitle:findPic(pic)?.title||'',note,by:currentUser
   });
-  toast('Barang ditambahkan ke daftar pemeriksaan opname. Stok belum berubah.');
+  qSave();toast('Barang ditambahkan ke daftar pemeriksaan opname. Stok belum berubah.');
  }
  if($('#op_item'))$('#op_item').value='';
  if($('#op_system'))$('#op_system').value='';
@@ -2827,7 +2970,7 @@ function commitOpnameQueue(){
   const diff=r3(actual-before);
   const rec={
    id:uid(),date:x.date||today(),itemId:it.id,sku:it.sku,name:it.name,
-   systemQty:before,actualQty:actual,diff,pic:x.pic.trim(),note:x.note||'',by:x.by||currentUser
+   systemQty:before,actualQty:actual,diff,pic:x.pic.trim(),picTitle:x.picTitle||'',note:x.note||'',by:x.by||currentUser
   };
   S.opnames.push(rec);
   if(diff!==0){
@@ -2972,7 +3115,7 @@ Budi;Teknisi Elektrik;aktif</pre>
 }
 
 /** Melindungi satu nilai untuk CSV (tanda kutip bila memuat ; , " atau baris baru). */
-const csvc=v=>{v=String(v==null?'':v);return /[";,\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
+const csvc=v=>{v=String(v==null?'':v);if(/^[=+@\t\r]|^-(?!\d)/.test(v))v="'"+v;return /[";,\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v};
 
 /** Mengunduh cadangan lengkap (.json) dan mencatat waktu backup terakhir. */
 function expJSON(){S.meta=S.meta||{};S.meta.lastBackupAt=new Date().toISOString();save();dl('warehouse-backup-'+today()+'.json',JSON.stringify(S,null,2),'application/json');if(V==='dash')render()}
@@ -3078,6 +3221,7 @@ function openExportDialog(){
 function runExport(){
  const f=$('#exp_from').value,t=$('#exp_to').value,hide=$('#exp_hide').checked;
  if(f&&t&&f>t){updExpHint();return}
+ let rows=mutasiRows(f,t,hide);
  const w=window.open('','_blank');
  if(!w)return toast('Izinkan pop-up browser untuk membuat PDF');
  closeExportDialog();
@@ -3085,12 +3229,26 @@ function runExport(){
 }
 
 /** Membuat laporan mutasi Daftar Suku Cadang sebagai file Excel (.xls, format SpreadsheetML). */
+/** Baris laporan mutasi (stok awal, masuk, keluar, sisa) per barang pada periode. Dipakai ekspor Excel dan cetak PDF. */
+function mutasiRows(from,to,hideIdle){
+ const inRange=x=>(!from||x.date>=from)&&(!to||x.date<=to);
+ const sum=(arr,ty)=>arr.filter(x=>x.type===ty).reduce((s,x)=>s+(Number(x.qty)||0),0);
+ let rows=filteredInventoryItems().map(i=>{
+  const tx=S.tx.filter(x=>x.item===i.id);
+  const after=to?tx.filter(x=>x.date>to):[];
+  const masuk=r3(sum(tx.filter(x=>inRange(x)&&!x.isInit&&x.note!=='Stok awal'),'in'));
+  const keluar=r3(sum(tx.filter(inRange),'out'));
+  const ending=Math.max(0,r3((Number(i.stock)||0)-sum(after,'in')+sum(after,'out')));
+  const opening=Math.max(0,r3(ending-masuk+keluar));
+  return {i,opening,masuk,keluar,ending};
+ });
+ if(hideIdle)rows=rows.filter(r=>r.masuk>0||r.keluar>0);
+ return rows;
+}
+
 function runExcelExport(){
  const f=$('#exp_from').value,t=$('#exp_to').value,hide=$('#exp_hide').checked;
  if(f&&t&&f>t){updExpHint();return}
- const inRange=x=>(!f||x.date>=f)&&(!t||x.date<=t),sum=(arr,ty)=>arr.filter(x=>x.type===ty).reduce((a,x)=>a+(Number(x.qty)||0),0);
- let rows=filteredInventoryItems().map(i=>{const tx=S.tx.filter(x=>x.item===i.id),after=t?tx.filter(x=>x.date>t):[];const masuk=r3(sum(tx.filter(x=>inRange(x)&&!x.isInit&&x.note!=='Stok awal'),'in')),keluar=r3(sum(tx.filter(inRange),'out'));const ending=Math.max(0,r3((Number(i.stock)||0)-sum(after,'in')+sum(after,'out'))),opening=Math.max(0,r3(ending-masuk+keluar));return {i,opening,masuk,keluar,ending};});
- if(hide)rows=rows.filter(x=>x.masuk>0||x.keluar>0);
  const fl=[F.cat&&'Kategori: '+F.cat,F.st&&'Status: '+F.st,F.q&&'Pencarian: '+F.q].filter(Boolean).join(' | ');
  // SpreadsheetML requires Styles before Worksheet; also remove XML-illegal control characters.
  const escXml=v=>String(v??'').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g,'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&apos;');
@@ -3110,18 +3268,7 @@ function runExcelExport(){
  * Template HTML + CSS cetak ada di dalam fungsi; @page margin 0 menghilangkan header/footer browser.
  */
 function printInventoryReport(w,from,to,hideIdle){
- const inRange=x=>(!from||x.date>=from)&&(!to||x.date<=to);
- const sum=(arr,ty)=>arr.filter(x=>x.type===ty).reduce((s,x)=>s+(Number(x.qty)||0),0);
- let rows=filteredInventoryItems().map(i=>{
-  const tx=S.tx.filter(x=>x.item===i.id);
-  const after=to?tx.filter(x=>x.date>to):[];
-  const masuk=r3(sum(tx.filter(x=>inRange(x)&&!x.isInit&&x.note!=='Stok awal'),'in'));
-  const keluar=r3(sum(tx.filter(inRange),'out'));
-  const ending=Math.max(0,r3((Number(i.stock)||0)-sum(after,'in')+sum(after,'out')));
-  const opening=Math.max(0,r3(ending-masuk+keluar));
-  return {i,opening,masuk,keluar,ending};
- });
- if(hideIdle)rows=rows.filter(r=>r.masuk>0||r.keluar>0);
+ let rows=mutasiRows(from,to,hideIdle);
  const fl=[];
  if(F.cat)fl.push('Kategori: '+F.cat);
  if(F.st)fl.push('Status: '+F.st);
@@ -3182,6 +3329,23 @@ function parseCSV(t){
  * JSON: ganti seluruh data (konfirmasi dua klik), pulihkan PIC; cadangan lama tanpa PIC -> PIC dibentuk dari riwayat.
  * CSV barang: tambah/perbarui per SKU. CSV PIC: tambah/perbarui per nama (kolom status opsional).
  */
+/** Memeriksa dan membersihkan cadangan JSON sebelum dipakai: hanya objek yang valid, id hanya huruf/angka/-/_, angka dipastikan angka. */
+function cleanImport(o){
+ if(!o||typeof o!=='object'||!Array.isArray(o.items)||!Array.isArray(o.tx))throw new Error('Struktur cadangan tidak valid');
+ const sid=v=>String(v??'').replace(/[^A-Za-z0-9_-]/g,'');
+ const objs=a=>(Array.isArray(a)?a:[]).filter(x=>x&&typeof x==='object');
+ const toN=v=>{const n=Number(v);return isFinite(n)?n:0};
+ const lines=f=>objs(f.items).map(x=>({...x,id:sid(x.id)||uid(),itemId:sid(x.itemId),qty:toN(x.qty)}));
+ const items=objs(o.items).map(i=>({...i,id:sid(i.id)||uid(),sku:String(i.sku??''),name:String(i.name??''),stock:toN(i.stock),min:toN(i.min)}));
+ const tx=objs(o.tx).filter(t=>t.type==='in'||t.type==='out').map(t=>({...t,id:sid(t.id)||uid(),item:sid(t.item),qty:toN(t.qty)}));
+ const reqForms=objs(o.reqForms).map(f=>({...f,id:sid(f.id)||uid(),items:lines(f)}));
+ const reqArchive=objs(o.reqArchive).map(f=>({...f,id:sid(f.id)||uid(),items:lines(f)}));
+ const reqs=objs(o.reqs).map(r=>({...r,id:sid(r.id)||uid(),itemId:sid(r.itemId),qty:toN(r.qty)}));
+ const opnames=objs(o.opnames).map(x=>({...x,id:sid(x.id)||uid(),itemId:sid(x.itemId),systemQty:toN(x.systemQty),actualQty:toN(x.actualQty),diff:toN(x.diff)}));
+ const pics=objs(o.pics).filter(p=>p.name).map(p=>({...p,id:sid(p.id)||uid()}));
+ return {...o,items,tx,reqs,reqForms,reqArchive,opnames,pics,meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
+}
+
 function doImport(){
  if(currentUser!=='user')return toast('Akses ditolak! Hanya User utama yang dapat melakukan import data.');
  const f=$('#imp').files[0];if(!f)return toast('Pilih file .csv atau .json terlebih dahulu');
@@ -3189,7 +3353,7 @@ function doImport(){
  if(isJ&&pend!=='imp'){pend='imp';toast('Import .json menggantikan SEMUA data. Klik Proses Import lagi untuk lanjut');setTimeout(()=>{pend=null},5000);return}
  pend=null;const rd=new FileReader();rd.onerror=()=>toast('Gagal membaca file');
  rd.onload=()=>{try{
-  if(isJ){const o=JSON.parse(rd.result);if(!o||!Array.isArray(o.items)||!Array.isArray(o.tx))throw 0;S={items:o.items,tx:o.tx,reqs:Array.isArray(o.reqs)?o.reqs:[],reqForms:Array.isArray(o.reqForms)?o.reqForms:[],reqArchive:Array.isArray(o.reqArchive)?o.reqArchive:[],opnames:Array.isArray(o.opnames)?o.opnames:[],pics:Array.isArray(o.pics)?o.pics.filter(p=>p&&p.name).map(p=>({...p,id:p.id||uid(),name:String(p.name).trim(),title:p.title||'',active:p.active!==false})):[],meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
+  if(isJ){const o=cleanImport(JSON.parse(rd.result));dl('cadangan-sebelum-impor-'+today()+'.json',JSON.stringify(S,null,2),'application/json');S={items:o.items,tx:o.tx,reqs:Array.isArray(o.reqs)?o.reqs:[],reqForms:Array.isArray(o.reqForms)?o.reqForms:[],reqArchive:Array.isArray(o.reqArchive)?o.reqArchive:[],opnames:Array.isArray(o.opnames)?o.opnames:[],pics:Array.isArray(o.pics)?o.pics.filter(p=>p&&p.name).map(p=>({...p,id:p.id||uid(),name:String(p.name).trim(),title:p.title||'',active:p.active!==false})):[],meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
    // Cadangan lama (sebelum ada Master PIC): bentuk daftar PIC dari riwayat barang keluar.
    if(!S.pics.length){const old=[...new Set(S.tx.filter(t=>t.type==='out'&&t.pic).map(t=>t.pic))];S.pics=old.map((name,i)=>({id:'PIC-'+(i+1),name,title:'Jabatan belum diisi',active:true,createdBy:'migrasi'}));}
    save();toast('Cadangan dipulihkan: '+S.items.length+' barang, '+S.pics.length+' PIC');go('dash')}
@@ -3399,7 +3563,7 @@ function abBannerHtml(){
 
 /** Kartu pengaturan Auto Backup di halaman Export / Import. */
 function abCardHtml(){
- const fmt=d=>d?new Date(d).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short'})+' WIB':'Belum pernah';
+ const fmt=d=>d?new Date(d).toLocaleString('id-ID',{dateStyle:'medium',timeStyle:'short',timeZone:'Asia/Jakarta'})+' WIB':'Belum pernah';
  if(!abSupported())return `<div class="card" style="margin-top:14px"><h3>🗂️ Auto Backup JSON ke Folder</h3><p class="mt" style="margin:0">Fitur ini membutuhkan <b>Google Chrome</b> atau <b>Microsoft Edge</b> (versi terbaru). Browser yang sedang dipakai belum mendukung pemilihan folder penyimpanan.</p></div>`;
  const hasFolder=!!abCfg.folderName;
  const stat=!hasFolder?'<span class="b wa">Belum diatur</span>':!abCfg.enabled?'<span class="b er">Nonaktif</span>':abPerm==='granted'?'<span class="b ok">Aktif</span>':'<span class="b wa">Perlu izin</span>';
@@ -3426,6 +3590,87 @@ function abCardHtml(){
 }
 
 /* ==========================================================================
+   [22] ANIMASI GRAFIK DASHBOARD
+   --------------------------------------------------------------------------
+   Tujuan   : Grafik batang (penerimaan vs pemakaian), batang horizontal (Stok per Kategori),
+              dan donut (Kondisi Stok, Status Request) bergerak HANYA saat terlihat di layar.
+   Cara kerja: MutationObserver mendeteksi grafik yang baru dirender -> prepare() menaruhnya
+              di keadaan awal (nol) -> IntersectionObserver memanggil play() saat grafik terlihat.
+   Catatan  : Tidak ada data yang diubah. Dimatikan otomatis bila sistem meminta
+              pengurangan gerak (prefers-reduced-motion).
+   Cara ubah: Durasi & kurva ada di play(). Matikan satu jenis: hapus selectornya di scan().
+   ========================================================================== */
+(function chartAnim(){
+ if(window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches)return;
+ const ease=t=>1-Math.pow(1-t,3);
+
+ /** Menaruh grafik pada keadaan awal (nol) sebelum terlihat. */
+ function prepare(el){
+  if(el.classList.contains('chart-area')){
+   el.querySelectorAll('.chart-bars span').forEach(s=>{
+    s.dataset.h=s.style.height;
+    s.style.transition='none';
+    s.style.height='0%';
+   });
+  }else if(el.classList.contains('br')){
+   const b=el.querySelector('i b');
+   if(b){b.dataset.w=b.style.width;b.style.transition='none';b.style.width='0%'}
+  }else if(el.classList.contains('status-donut-wrap')){
+   el.querySelectorAll('circle.seg').forEach(c=>{
+    c.dataset.len=parseFloat(String(c.getAttribute('stroke-dasharray')||'0').split(/\s+/)[0])||0;
+    c.setAttribute('stroke-dasharray','0 100');
+   });
+  }
+ }
+
+ /** Menjalankan animasi grafik yang sudah terlihat. */
+ function play(el){
+  if(el.classList.contains('chart-area')){
+   el.querySelectorAll('.chart-col').forEach((col,ci)=>{
+    col.querySelectorAll('.chart-bars span').forEach((s,si)=>{
+     s.style.transition=`height .9s cubic-bezier(.2,.8,.2,1) ${ci*45+si*90}ms`;
+     s.style.height=s.dataset.h||'0%';
+    });
+   });
+  }else if(el.classList.contains('br')){
+   const b=el.querySelector('i b');
+   if(b){b.style.transition='width 1s cubic-bezier(.2,.8,.2,1)';b.style.width=b.dataset.w||'0%'}
+  }else if(el.classList.contains('status-donut-wrap')){
+   el.querySelectorAll('circle.seg').forEach((c,i)=>{
+    const target=parseFloat(c.dataset.len)||0;
+    const start=performance.now()+i*150,dur=1000;
+    const step=now=>{
+     const t=Math.min(1,Math.max(0,(now-start)/dur));
+     const v=target*ease(t);
+     c.setAttribute('stroke-dasharray',`${v.toFixed(3)} ${(100-v).toFixed(3)}`);
+     if(t<1)requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+   });
+  }
+ }
+
+ const io=('IntersectionObserver' in window)?new IntersectionObserver(entries=>{
+  entries.forEach(en=>{
+   if(en.isIntersecting){io.unobserve(en.target);play(en.target)}
+  });
+ },{threshold:0.25}):null;
+
+ /** Mencari grafik baru di #app yang belum disiapkan, lalu menyiapkannya. */
+ function scan(){
+  document.querySelectorAll('.chart-area:not([data-anim]),.br:not([data-anim]),.status-donut-wrap:not([data-anim])').forEach(el=>{
+   el.dataset.anim='1';
+   prepare(el);
+   if(io)io.observe(el);else play(el);
+  });
+ }
+
+ const app=document.getElementById('app');
+ if(app)new MutationObserver(scan).observe(app,{childList:true,subtree:true});
+ scan();
+})();
+
+/* ==========================================================================
    [21] INISIALISASI APLIKASI (urutan boot)
    --------------------------------------------------------------------------
    Tujuan   : Menjalankan aplikasi setelah semua definisi di atas siap. Harus PALING BAWAH.
@@ -3435,9 +3680,283 @@ function abCardHtml(){
    1) tema -> 2) muat data (atau seed contoh) -> 3) siapkan Auto Backup ->
    4) cek sesi login tersimpan -> 5) jika sudah login langsung buka Dashboard. */
 initTheme();
-load();
-try{abInit()}catch(e){}
-checkSession();
-if(currentUser){renderNav();go('dash');}
+const loginBtn=document.getElementById('loginSubmit');
+if(loginBtn)loginBtn.disabled=true;   // login baru aktif setelah data selesai dimuat
+load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
+ if(loginBtn)loginBtn.disabled=false;
+ qLoad();
+ try{abInit()}catch(e){}
+ checkSession();
+ if(currentUser){renderNav();go('dash');}
+ window.__mimsDataReady=true;   // data lokal siap -> mulai sinkronisasi Firebase ([22])
+ try{window.mimsFbStart&&window.mimsFbStart()}catch(e){console.error('[MIMS] Firebase:',e)}
+});
 
-</script></body></html>
+</script>
+<!-- ==========================================================================
+   [22] SINKRONISASI FIREBASE REALTIME DATABASE
+   --------------------------------------------------------------------------
+   Tujuan   : Data MIMS (S) tersimpan di Firebase Realtime Database dan ikut berubah realtime
+              antar komputer. IndexedDB tetap dipakai sebagai salinan lokal (aplikasi tetap
+              jalan walau offline atau Firebase gagal dimuat).
+   Struktur : mims/items, mims/tx, mims/reqs, mims/reqForms, mims/reqArchive, mims/opnames,
+              mims/pics (masing-masing array), mims/_sync (waktu, pengguna, perangkat terakhir
+              yang menulis). S.meta (info backup) sengaja TIDAK disinkronkan (khusus per komputer).
+   Alur     : MIMS -> Firebase : save() memanggil mimsFbPush(); hanya koleksi yang berubah
+                                 yang dikirim (tertunda 0,4 detik).
+              Firebase -> MIMS : onValue() menerima perubahan; koleksi yang tidak punya
+                                 perubahan lokal belum terkirim diganti, lalu tampilan digambar ulang.
+   Sinkron awal (sekali tiap boot):
+              - Firebase kosong                      -> data lokal diunggah.
+              - Firebase berisi, lokal tidak berubah -> data Firebase dipakai
+                (salinan lokal yang berbeda disimpan dulu di IndexedDB: cadangan_sebelum_sync_*).
+              - Ada perubahan lokal belum terkirim   -> data lokal menang dan diunggah
+                (penanda localStorage mims_fb_dirty; salinan Firebase disimpan: cadangan_firebase_*).
+   Batasan  : Bila dua perangkat mengubah koleksi yang SAMA bersamaan, yang terakhir menyimpan menang.
+   Auth     : Masuk ke Firebase memakai Authentication ANONIM (harus diaktifkan di Firebase Console:
+              Authentication > Sign-in method > Anonymous). Rules dapat dibatasi ke auth != null.
+              Ini TIDAK menggantikan login MIMS (user/supervisor/admin) dan bukan pengaman penuh:
+              siapa pun yang membuka file ini bisa masuk anonim. Untuk keamanan kuat, pakai akun Email/Password.
+   ========================================================================== -->
+<script>
+(function(){
+ 'use strict';
+ const FIREBASE_CONFIG={
+  apiKey:'AIzaSyB18-5KeRXB4VUJhZ2bsDH0hbGui8DTyQQ',
+  authDomain:'mims-database.firebaseapp.com',
+  databaseURL:'https://mims-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+  projectId:'mims-database',
+  storageBucket:'mims-database.firebasestorage.app',
+  messagingSenderId:'934188939152',
+  appId:'1:934188939152:web:60ac046279293cda616515'
+ };
+ const ROOT='mims';
+ const COLS=['items','tx','reqs','reqForms','reqArchive','opnames','pics'];
+ const SDK='https://www.gstatic.com/firebasejs/10.8.0/';
+ const DIRTY_KEY='mims_fb_dirty', DEV_KEY='mims_fb_device';
+
+ let fb=null, db=null, auth=null;            // modul SDK & instance database
+ let bootDone=false;              // true setelah boot aplikasi selesai (mimsFbStart dipanggil)
+ let ready=false;                 // true setelah sinkron awal selesai
+ let connected=false, errMsg='';
+ let lastRemote=null;             // snapshot Firebase terakhir (sudah dinormalisasi)
+ const fbLast={};                 // bentuk kanonik tiap koleksi yang terakhir diketahui sama dengan Firebase
+ let timer=null, pushing=false, again=false, renderWait=false;
+
+ /* ---------- Util ---------- */
+ const clone=x=>JSON.parse(JSON.stringify(x));
+ const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
+ const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+ const lsDel=k=>{try{localStorage.removeItem(k)}catch(e){}};
+ function deviceId(){let d=lsGet(DEV_KEY);if(!d){d='dev-'+Math.random().toString(36).slice(2,8);lsSet(DEV_KEY,d)}return d}
+
+ /** Firebase menyimpan array sebagai objek berindeks dan membuang nilai kosong; ini mengembalikannya menjadi array. */
+ function arr(v){
+  if(Array.isArray(v))return v.filter(x=>x!=null);
+  if(v&&typeof v==='object')return Object.keys(v).sort((a,b)=>a-b).map(k=>v[k]).filter(x=>x!=null);
+  return [];
+ }
+
+ /** Mengubah isi Firebase menjadi bentuk S (koleksi selalu array; Form PR selalu punya items). */
+ function normRemote(v){
+  const o={};
+  COLS.forEach(c=>{o[c]=arr(v&&v[c])});
+  ['reqForms','reqArchive'].forEach(c=>o[c].forEach(f=>{f.items=arr(f.items)}));
+  return o;
+ }
+ const hasData=o=>COLS.some(c=>o[c].length>0);
+
+ /** Bentuk teks stabil untuk membandingkan data: kunci diurutkan; null, array kosong, dan objek kosong diabaikan (Firebase membuangnya). */
+ function canon(v){
+  if(Array.isArray(v))return '['+v.map(canon).join(',')+']';
+  if(v&&typeof v==='object'){
+   const ks=Object.keys(v).filter(k=>{
+    const x=v[k];
+    if(x===undefined||x===null)return false;
+    if(Array.isArray(x))return x.length>0;
+    if(typeof x==='object')return Object.keys(x).length>0;
+    return true;
+   }).sort();
+   return '{'+ks.map(k=>JSON.stringify(k)+':'+canon(v[k])).join(',')+'}';
+  }
+  return JSON.stringify(v===undefined?null:v);
+ }
+
+ /* ---------- Lencana status di sidebar ---------- */
+ function refreshStatus(){
+  const el=document.getElementById('fbStatus');
+  if(!el)return;
+  let t,c;
+  if(errMsg){t='⚠️ Firebase: '+errMsg;c='var(--er)'}
+  else if(!bootDone||!fb){t='☁️ Firebase: menghubungkan…';c='var(--mt)'}
+  else if(!connected){t='☁️ Offline (tersimpan lokal)';c='var(--wa)'}
+  else if(!ready||pushing||lsGet(DIRTY_KEY)==='1'){t='☁️ Menyinkronkan…';c='var(--wa)'}
+  else{t='☁️ Firebase: tersinkron';c='var(--ok)'}
+  el.textContent=t;el.style.color=c;el.title=errMsg||'Sinkronisasi Firebase Realtime Database';
+ }
+
+ /* ---------- Tampilan ---------- */
+ /** True bila pengguna sedang mengisi form (jangan gambar ulang agar isian tidak hilang). */
+ function formBusy(){
+  const app=document.getElementById('app');
+  if(!app)return false;
+  const a=document.activeElement;
+  if(a&&app.contains(a)&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return true;
+  if(['in','out','req','opname','master','pic'].includes(V)){
+   return [...app.querySelectorAll('input:not([type=checkbox]):not([type=radio]),textarea')].some(x=>String(x.value||'').trim()!=='');
+  }
+  return false;
+ }
+ function refreshUI(){
+  if(typeof currentUser==='undefined'||!currentUser)return;
+  try{renderNav()}catch(e){}
+  if(formBusy()){
+   if(!renderWait){
+    renderWait=true;
+    const iv=setInterval(()=>{
+     if(!currentUser){clearInterval(iv);renderWait=false;return}
+     if(!formBusy()){clearInterval(iv);renderWait=false;try{render()}catch(e){console.error(e)}}
+    },1500);
+   }
+   return;
+  }
+  try{render()}catch(e){console.error('[MIMS] Gagal menggambar ulang:',e)}
+ }
+
+ /* ---------- Cadangan lokal sebelum data tertimpa ---------- */
+ function backup(prefix,obj){
+  try{dataPut(JSON.stringify(obj),prefix+Date.now()).catch(e=>console.error('[MIMS] Cadangan gagal:',e))}catch(e){}
+ }
+
+ /* ---------- Firebase -> MIMS ---------- */
+ /** Mengganti koleksi di S dengan data Firebase, menyimpannya ke IndexedDB, lalu menggambar ulang. */
+ function adopt(remote,cols,notify){
+  cols.forEach(c=>{S[c]=clone(remote[c]);fbLast[c]=canon(S[c])});
+  save();                      // simpan ke IndexedDB; tidak mengirim balik karena sudah sama dengan Firebase
+  refreshUI();
+  if(notify)try{toast('Data diperbarui dari perangkat lain')}catch(e){}
+ }
+
+ /** Mencocokkan S dengan snapshot Firebase terakhir (koleksi yang punya perubahan lokal belum terkirim dilewati). */
+ function reconcile(){
+  if(!ready||!lastRemote)return;
+  const take=[];
+  COLS.forEach(c=>{
+   if(canon(S[c])!==fbLast[c])return;            // ada perubahan lokal belum terkirim: biarkan
+   if(canon(lastRemote[c])!==fbLast[c])take.push(c); // Firebase berubah oleh pihak lain
+  });
+  if(take.length)adopt(lastRemote,take,true);
+ }
+
+ /** Sinkron awal, dipanggil pada snapshot pertama. */
+ function firstSync(remote){
+  const dirty=lsGet(DIRTY_KEY)==='1';
+  const rEmpty=!hasData(remote);
+  const differs=COLS.some(c=>canon(S[c])!==canon(remote[c]));
+  COLS.forEach(c=>{fbLast[c]=canon(remote[c])});
+  if(rEmpty||dirty){
+   if(!rEmpty&&differs)backup('cadangan_firebase_',remote);
+   ready=true;
+   schedulePush(0);                                // kirim selisih data lokal
+  }else{
+   if(differs)backup('cadangan_sebelum_sync_',{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,meta:S.meta});
+   ready=true;
+   if(differs)adopt(remote,COLS,false);
+  }
+ }
+
+ function onSnap(snap){
+  errMsg='';
+  lastRemote=normRemote(snap.val());
+  if(!ready)firstSync(lastRemote);else reconcile();
+  refreshStatus();
+ }
+ function onErr(e){
+  console.error('[MIMS] Gagal membaca Firebase:',e);
+  errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal membaca data';
+  refreshStatus();
+ }
+
+ /* ---------- MIMS -> Firebase ---------- */
+ function schedulePush(ms){clearTimeout(timer);timer=setTimeout(doPush,ms)}
+
+ async function doPush(){
+  if(!ready||!db)return;
+  if(pushing){again=true;return}
+  const updates={}, sent={};
+  COLS.forEach(c=>{
+   const cs=canon(S[c]);
+   if(cs!==fbLast[c]){
+    const a=clone(S[c]||[]);
+    updates[ROOT+'/'+c]=a.length?a:null;           // array kosong = hapus node
+    sent[c]=cs;
+   }
+  });
+  if(!Object.keys(updates).length){lsDel(DIRTY_KEY);refreshStatus();return}
+  updates[ROOT+'/_sync']={at:fb.serverTimestamp(),by:(typeof currentUser!=='undefined'&&currentUser)||'-',device:deviceId()};
+  pushing=true;refreshStatus();
+  try{
+   await fb.update(fb.ref(db),updates);
+   Object.assign(fbLast,sent);
+   errMsg='';
+  }catch(e){
+   console.error('[MIMS] Gagal mengirim ke Firebase:',e);
+   errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal mengirim data';
+   pushing=false;refreshStatus();
+   schedulePush(15000);                            // coba lagi
+   return;
+  }
+  pushing=false;
+  if(again||COLS.some(c=>canon(S[c])!==fbLast[c])){again=false;schedulePush(0);return}
+  lsDel(DIRTY_KEY);
+  refreshStatus();   // rekonsiliasi hanya dari snapshot Firebase baru (onSnap), bukan dari snapshot lama
+ }
+
+ /** Dipanggil save() setiap data berubah. */
+ window.mimsFbPush=function(){
+  if(!bootDone)return;                            // save() saat boot (data contoh/migrasi) bukan perubahan pengguna
+  lsSet(DIRTY_KEY,'1');
+  if(ready)schedulePush(400);
+  refreshStatus();
+ };
+
+ /* ---------- Koneksi ---------- */
+ async function loadSdk(){
+  const [a,d,u]=await Promise.all([import(SDK+'firebase-app.js'),import(SDK+'firebase-database.js'),import(SDK+'firebase-auth.js')]);
+  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,update:d.update,serverTimestamp:d.serverTimestamp,
+          getAuth:u.getAuth,signInAnonymously:u.signInAnonymously};
+ }
+
+ async function connect(){
+  try{
+   fb=await loadSdk();
+   const app=fb.initializeApp(FIREBASE_CONFIG);
+   db=fb.getDatabase(app);
+   auth=fb.getAuth(app);
+  }catch(e){
+   console.error('[MIMS] Firebase tidak dapat dimuat (mode offline):',e);
+   fb=null;errMsg='tidak dapat dimuat (mode lokal)';refreshStatus();return;
+  }
+  try{
+   await fb.signInAnonymously(auth);               // login anonim ke Firebase (untuk Rules auth != null)
+  }catch(e){
+   console.error('[MIMS] Login anonim Firebase gagal:',e);
+   errMsg='login anonim gagal (aktifkan Anonymous di Authentication)';refreshStatus();
+  }                                                 // tetap lanjut: bila Rules masih terbuka, sinkronisasi tetap bisa
+  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();refreshStatus()});
+  fb.onValue(fb.ref(db,ROOT),onSnap,onErr);
+  refreshStatus();
+ }
+
+ /** Dipanggil dari boot aplikasi setelah data lokal selesai dimuat. */
+ window.mimsFbStart=function(){
+  if(bootDone)return;
+  bootDone=true;
+  refreshStatus();
+  connect();
+ };
+ if(window.__mimsDataReady)window.mimsFbStart();
+})();
+</script>
+
+</body></html>
