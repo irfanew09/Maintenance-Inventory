@@ -3813,7 +3813,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   else if(!connected){t='☁️ Offline (tersimpan lokal)';c='var(--wa)'}
   else if(!ready||pushing||lsGet(DIRTY_KEY)==='1'){t='☁️ Menyinkronkan…';c='var(--wa)'}
   else{t='☁️ Firebase: tersinkron';c='var(--ok)'}
-  el.textContent=t;el.style.color=c;el.title=errMsg||'Sinkronisasi Firebase Realtime Database';
+  el.textContent=t;el.style.color=c;el.title=(errMsg||'Sinkronisasi Firebase Realtime Database')+' - klik untuk diagnosa';
  }
 
  /* ---------- Tampilan ---------- */
@@ -4004,6 +4004,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   }
   lastP=P;
   if(first){prepareFirst(P);ready=true}
+  if(first)dlog('Sinkron awal','snapshot pertama diterima');
   const r=merge(P);
   if(r.adopted){save();refreshUI();if(!first)try{toast('Data diperbarui dari perangkat lain')}catch(e){}}
   if(fromPayload)try{toast('Data dari mims/payload dipindahkan ke format per-record')}catch(e){}
@@ -4013,6 +4014,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  }
  function onErr(e){
   console.error('[MIMS] Gagal membaca Firebase:',e);
+  dlog('Baca data','GAGAL - '+((e&&(e.code||e.message))||e));
   errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal membaca data';
   refreshStatus();
  }
@@ -4059,6 +4061,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    errMsg='';
   }catch(e){
    console.error('[MIMS] Gagal mengirim ke Firebase:',e);
+   dlog('Kirim data','GAGAL - '+((e&&(e.code||e.message))||e));
    errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal mengirim data';
    pushing=false;refreshStatus();
    schedulePush(15000);                              // coba lagi
@@ -4086,9 +4089,13 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
           getAuth:u.getAuth,signInAnonymously:u.signInAnonymously};
  }
 
+ const dlogs=[];
+ function dlog(step,msg){dlogs.push(new Date().toTimeString().slice(0,8)+'  '+step+': '+msg);if(dlogs.length>60)dlogs.shift()}
+
  /** Teks singkat penyebab error Firebase Auth / SDK, agar mudah didiagnosis dari lencana status. */
  function hint(e){
   const c=String((e&&(e.code||e.message))||e||'');
+  if(/configuration-not-found/.test(c))return 'buka Authentication di Firebase Console, klik Get started, lalu aktifkan Anonymous';
   if(/operation-not-allowed|admin-restricted/.test(c))return 'aktifkan Anonymous di Authentication > Sign-in method';
   if(/not-supported-in-this-environment/.test(c))return 'buka lewat http:// atau https://, bukan file://';
   if(/api-key|invalid-api/.test(c))return 'API Key tidak valid';
@@ -4099,7 +4106,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  async function connect(){
   try{
    fb=await loadSdk();
+   dlog('Muat SDK','berhasil');
   }catch(e){
+   dlog('Muat SDK','GAGAL - '+((e&&(e.code||e.message))||e));
    console.error('[MIMS] SDK Firebase tidak dapat dimuat (mode offline):',e);
    fb=null;errMsg='SDK tidak dapat dimuat ('+hint(e)+')';refreshStatus();return;
   }
@@ -4107,7 +4116,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    const app=fb.initializeApp(FIREBASE_CONFIG);
    db=fb.getDatabase(app);
    auth=fb.getAuth(app);
+   dlog('Inisialisasi','berhasil');
   }catch(e){
+   dlog('Inisialisasi','GAGAL - '+((e&&(e.code||e.message))||e));
    console.error('[MIMS] Inisialisasi Firebase gagal:',e);
    fb=null;errMsg='inisialisasi gagal ('+hint(e)+')';refreshStatus();return;
   }
@@ -4117,20 +4128,77 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    hasBase=true;
   }
   try{
-   await fb.signInAnonymously(auth);               // login anonim ke Firebase (untuk Rules auth != null)
+   const cred=await fb.signInAnonymously(auth);    // login anonim ke Firebase (untuk Rules auth != null)
+   dlog('Login anonim','berhasil (uid '+String((cred&&cred.user&&cred.user.uid)||'?').slice(0,6)+'...)');
   }catch(e){
+   dlog('Login anonim','GAGAL - '+((e&&(e.code||e.message))||e));
    console.error('[MIMS] Login anonim Firebase gagal:',e);
    errMsg='login anonim gagal: '+hint(e);refreshStatus();
   }                                                 // tetap lanjut: bila Rules masih terbuka, sinkronisasi tetap bisa
-  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();refreshStatus()});
+  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();dlog('Koneksi RTDB',connected?'tersambung':'terputus');refreshStatus()});
   fb.onValue(fb.ref(db,ROOT),onSnap,onErr);
   refreshStatus();
+ }
+
+ /* ---------- Diagnosa (klik lencana status ☁️) ---------- */
+ async function probe(label,url){
+  try{
+   const r=await fetch(url);let b='';
+   try{b=(await r.text()).replace(/\s+/g,' ').slice(0,110)}catch(e){}
+   return {line:label+': HTTP '+r.status+' '+b,status:r.status};
+  }catch(e){
+   return {line:label+': GAGAL ('+((e&&e.message)||e)+')',status:0};
+  }
+ }
+ async function runDiag(box){
+  const L=[];
+  const show=()=>{box.value=L.join('\n')};
+  L.push('MIMS Firebase - diagnosa '+new Date().toISOString());
+  L.push('Alamat halaman : '+location.protocol+'//'+(location.host||'(file lokal)'));
+  L.push('Browser online : '+navigator.onLine);
+  L.push('Status aplikasi: '+(errMsg||'tidak ada error')+' | RTDB tersambung: '+connected+' | sinkron awal: '+ready);
+  L.push('--- Log tahap ---');
+  dlogs.slice(-25).forEach(x=>L.push(x));
+  L.push('--- Uji langsung (memeriksa...) ---');show();
+  const url=FIREBASE_CONFIG.databaseURL+'/mims.json?shallow=true';
+  const a=await probe('REST tanpa login ',url);
+  let tok=null;try{tok=auth&&auth.currentUser?await auth.currentUser.getIdToken():null}catch(e){}
+  const b=tok?await probe('REST dengan login',url+'&auth='+encodeURIComponent(tok)):{line:'REST dengan login: dilewati (login anonim belum berhasil)',status:-1};
+  L.pop();L.push('--- Uji langsung ---',a.line,b.line,'--- Kesimpulan ---');
+  if(location.protocol==='file:')L.push('* Halaman dibuka dari file://. Bila login anonim gagal, buka lewat http://localhost atau hosting.');
+  if(a.status===0)L.push('* Browser tidak bisa menjangkau database. Periksa internet/firewall/antivirus yang memblokir *.firebasedatabase.app.');
+  else if(a.status===404)L.push('* URL database salah atau Realtime Database belum dibuat di Firebase Console.');
+  else if(a.status===401||a.status===403)L.push('* Database terjangkau. Menolak tanpa login (normal bila Rules memakai auth != null).');
+  else if(a.status===200)L.push('* PERHATIAN: database bisa dibaca TANPA login. Rules belum dipublikasikan atau masih terbuka.');
+  if(b.status===200)L.push('* Login anonim dan Rules sudah benar. Bila masih gagal, kirim log tahap di atas.');
+  else if(b.status===401||b.status===403)L.push('* Login berhasil tetapi Rules menolak. Pastikan Rules dipublikasikan di Realtime Database yang benar (default-rtdb) dan berisi mims dengan auth != null.');
+  else if(b.status===-1)L.push('* Login anonim belum berhasil: lihat baris "Login anonim" di log tahap untuk penyebabnya.');
+  show();
+ }
+ function showDiag(){
+  if(document.getElementById('fbDiag'))return;
+  const w=document.createElement('div');
+  w.id='fbDiag';
+  w.style.cssText='position:fixed;inset:0;z-index:3000;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;padding:16px';
+  w.innerHTML='<div style="background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:12px;max-width:760px;width:100%;padding:16px;box-shadow:0 12px 40px rgba(0,0,0,.35)">'+
+   '<b>Diagnosa Firebase</b><textarea id="fbDiagTx" readonly rows="18" style="width:100%;margin-top:10px;font:12px/1.45 Consolas,monospace;background:var(--sf2);color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:8px;box-sizing:border-box">Memeriksa...</textarea>'+
+   '<div style="display:flex;gap:8px;margin-top:10px;justify-content:flex-end"><button class="btn s" id="fbDiagCopy">Salin</button><button class="btn p" id="fbDiagClose">Tutup</button></div></div>';
+  document.body.appendChild(w);
+  const box=document.getElementById('fbDiagTx');
+  document.getElementById('fbDiagClose').onclick=()=>w.remove();
+  document.getElementById('fbDiagCopy').onclick=()=>{
+   box.select();
+   try{navigator.clipboard.writeText(box.value).then(()=>toast('Diagnosa disalin')).catch(()=>{document.execCommand('copy')})}catch(e){try{document.execCommand('copy')}catch(x){}}
+  };
+  runDiag(box).catch(e=>{box.value+='\nDiagnosa gagal dijalankan: '+((e&&e.message)||e)});
  }
 
  /** Dipanggil dari boot aplikasi setelah data lokal selesai dimuat. */
  window.mimsFbStart=function(){
   if(bootDone)return;
   bootDone=true;
+  const el=document.getElementById('fbStatus');
+  if(el){el.style.cursor='pointer';el.onclick=showDiag}
   refreshStatus();
   connect();
  };
