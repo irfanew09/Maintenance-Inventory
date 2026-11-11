@@ -134,6 +134,9 @@
  sessionStorage wh_session_v1      : username yang sedang login (hilang saat tab ditutup)
  localStorage  mims_autobackup_cfg : pengaturan Auto Backup
  IndexedDB     mims_autobackup_db  : handle folder tujuan Auto Backup
+ localStorage  mims_fb_dirty / mims_fb_device : penanda perubahan belum terkirim & id perangkat (Firebase)
+ Firebase RTDB mims/<koleksi>/k<id> : record per koleksi (items, tx, reqs, reqForms, reqArchive, opnames, pics) + mims/_sync
+ IndexedDB     mims_fb_base_v1     : hash record terakhir yang sinkron (dasar merge Firebase)
 
 ==========================================================================
  6. PERAN & HAK AKSES
@@ -251,16 +254,21 @@
 ==========================================================================
  1. Kata sandi tiga akun sama (123) dan tertulis di dalam kode; hanya cocok untuk
     pembatas peran di PC internal, bukan keamanan sungguhan.
- 2. Data hanya ada di browser tempat file dibuka. Wajib rutin backup.
+ 2. Data utama ada di IndexedDB browser DAN disinkronkan ke Firebase (bagian [22]). Tetap rutin backup.
  3. inventoryInsights() masih menghitung daftar "inactive" (barang tanpa
     pergerakan 90 hari) walau kartunya sudah tidak tampil di Dashboard.
- 4. Tidak ada sinkronisasi antar komputer / antar pengguna.
+ 4. Sinkronisasi antar komputer lewat Firebase: bila dua perangkat mengubah RECORD yang sama bersamaan,
+    yang terakhir menyimpan menang (record berbeda aman). Firebase memakai login anonim; batasi akses lewat Firebase Rules (auth != null).
  5. Penyimpanan localStorage memiliki batas kapasitas browser; lakukan Export
     JSON berkala, terutama sebelum Import atau perubahan data besar.
 
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 18 : Sinkronisasi Firebase Realtime Database untuk data utama (bagian [22]), tersimpan PER RECORD
+             (mims/<koleksi>/k<id>). Setiap save() hanya mengirim record yang berubah; perubahan dari perangkat
+             lain digabung otomatis (merge tiga arah) sehingga edit record berbeda tidak saling menimpa. Login
+             anonim Firebase Auth. Data dari versi "sinkron seluruh data" (mims/payload) dimigrasikan otomatis. Demo stok Firebase lama dihapus. Lencana status sinkron di sidebar.
  Update 17 : PIC Penerima (Suku Cadang Masuk) dan PIC Opname kini dipilih dari Master PIC, sama seperti
              PIC Pengambilan (Suku Cadang Keluar). Jabatan PIC ikut tersimpan dan tampil di riwayat.
  Update 16 : Sesi login disimpan di sessionStorage (hilang saat tab ditutup) dan dicek dengan
@@ -528,6 +536,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    <button id="themeBtn" class="btn s" onclick="toggleTheme()" style="width:100%;justify-content:center;font-weight:600">🌙 Mode Gelap</button>
    <div class="wib-badge"><span>🕒 Zona Waktu</span><b id="wibClock">WIB (UTC+7)</b></div>
    <div id="currentUserBadge" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between"></div>
+   <div id="fbStatus" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px">☁️ Firebase: menghubungkan…</div>
    <button class="btn s d" onclick="doLogout()" style="width:100%;justify-content:center">🚪 Keluar (Logout)</button>
   </div>
   <nav id="nav"></nav>
@@ -746,8 +755,6 @@ function toggleTheme(){
 
 /* Data utama aplikasi. Struktur lengkap: lihat dokumentasi bagian 4 di atas file. */
 let S={items:[],tx:[],reqs:[],reqForms:[],reqArchive:[],opnames:[],pics:[],meta:{}};
-Object.defineProperty(window,'S',{configurable:true,get:()=>S,set:value=>{S=value;dataVer++;}});
-
 
 /* Sesi & navigasi */
 let currentUser=null;   // null (belum login) | 'user' | 'supervisor' | 'admin'
@@ -966,21 +973,13 @@ function setSaveState(ok){
 function save(){
  dataVer++;
  const json=JSON.stringify(S);
- saveChain=saveChain.then(()=>dataPut(json)).then(()=>{
-  setSaveState(true);
-  // Sinkronkan seluruh state MIMS (S) ke Firebase setelah tersimpan lokal.
-  if(typeof window.__mimsFirebaseWrite==='function'){
-   window.__mimsFirebaseWrite(json).catch(e=>{
-    console.error('[MIMS Firebase] Gagal mengirim data MIMS:',e);
-    window.__mimsFirebaseSetStatus?.('Offline / gagal sinkron', 'error');
-   });
-  }
- }).catch(e=>{
+ saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
   console.error('[MIMS] Gagal menyimpan data:',e);
   setSaveState(false);
  });
  qSave();
  try{abSchedule()}catch(e){console.error('[MIMS] Gagal menjadwalkan backup:',e)}
+ try{window.mimsFbPush&&window.mimsFbPush()}catch(e){console.error('[MIMS] Firebase:',e)}
  return true;
 }
 
@@ -3679,20 +3678,6 @@ function abCardHtml(){
    Tujuan   : Menjalankan aplikasi setelah semua definisi di atas siap. Harus PALING BAWAH.
    ========================================================================== */
 
-/* Bridge aman antara aplikasi MIMS (script klasik) dan modul Firebase. */
-window.__mimsGetLocalPayload=()=>JSON.stringify(S);
-window.__mimsPersistRemote=json=>dataPut(json).then(()=>{dataVer++;});
-window.__mimsRefreshAfterRemote=()=>{
- if(currentUser){
-  renderNav();
-  render();
- }
-};
-window.__mimsGetCurrentPayload=()=>S;
-
-/* Sinyal bahwa data lokal MIMS selesai dimuat sebelum Firebase menentukan payload awal. */
-window.__mimsAppReady=new Promise(resolve=>{window.__mimsResolveAppReady=resolve;});
-
 /* Urutan boot (JANGAN diubah urutannya):
    1) tema -> 2) muat data (atau seed contoh) -> 3) siapkan Auto Backup ->
    4) cek sesi login tersimpan -> 5) jika sudah login langsung buka Dashboard. */
@@ -3700,160 +3685,459 @@ initTheme();
 const loginBtn=document.getElementById('loginSubmit');
 if(loginBtn)loginBtn.disabled=true;   // login baru aktif setelah data selesai dimuat
 load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
- if(window.__mimsResolveAppReady)window.__mimsResolveAppReady();
  if(loginBtn)loginBtn.disabled=false;
  qLoad();
  try{abInit()}catch(e){}
  checkSession();
  if(currentUser){renderNav();go('dash');}
+ window.__mimsDataReady=true;   // data lokal siap -> mulai sinkronisasi Firebase ([22])
+ try{window.mimsFbStart&&window.mimsFbStart()}catch(e){console.error('[MIMS] Firebase:',e)}
 });
 
 </script>
-<!-- Status sinkronisasi Firebase seluruh data MIMS -->
-<div id="mims-firebase-sync-status" role="status"
- style="position:fixed;right:14px;bottom:14px;z-index:1999;padding:8px 12px;border-radius:8px;
- background:#263238;color:#fff;font:12px/1.4 Arial,sans-serif;box-shadow:0 2px 10px #0003">
- Firebase: menghubungkan...
-</div>
+<!-- ==========================================================================
+   [22] SINKRONISASI FIREBASE REALTIME DATABASE (PER-RECORD)
+   --------------------------------------------------------------------------
+   Tujuan   : Data MIMS (S) tersimpan di Firebase Realtime Database dan ikut berubah realtime
+              antar komputer. IndexedDB tetap dipakai sebagai salinan lokal (aplikasi tetap
+              jalan walau offline atau Firebase gagal dimuat).
+   Struktur : mims/<koleksi>/k<id> = satu record (koleksi: items, tx, reqs, reqForms, reqArchive,
+              opnames, pics). Tiap record punya field _i (nomor urut, hanya ada di Firebase) agar
+              urutan array tetap sama di semua perangkat. mims/_sync = waktu, pengguna, perangkat
+              terakhir yang menulis. S.meta (info backup) TIDAK disinkronkan (khusus per komputer).
+   MIMS -> Firebase : save() memanggil mimsFbPush(); HANYA record yang berubah/baru/dihapus
+              yang dikirim (tertunda 0,4 detik, satu kali update atomik).
+   Firebase -> MIMS : onValue() menerima perubahan lalu digabung per record (merge tiga arah).
+   Merge tiga arah per record: pembanding = "base" (kondisi terakhir yang diketahui sama dengan
+              Firebase; hash disimpan di IndexedDB, kunci mims_fb_base_v1).
+              - hanya Firebase yang berubah -> record Firebase dipakai
+              - hanya lokal yang berubah     -> record lokal dikirim
+              - keduanya berubah berbeda     -> lokal menang (yang terakhir menyimpan menang)
+              Dua perangkat yang mengubah record BERBEDA tidak saling menimpa.
+   Sinkron awal tanpa base (pertama kali / data browser dihapus):
+              - Firebase kosong                    -> data lokal diunggah.
+              - Firebase berisi                    -> data Firebase dipakai; data lokal yang berbeda
+                                                      dicadangkan di IndexedDB (cadangan_sebelum_sync_*).
+              - ada perubahan lokal belum terkirim (mims_fb_dirty) -> digabung, lokal menang untuk
+                record yang sama.
+              Bila data lokal tampak hilang/rusak (>50% record di base tidak ada lokal), data Firebase dipulihkan.
+   Migrasi  : (1) Format array per koleksi (Update 18 awal) dikenali dan ditulis ulang otomatis ke per-record.
+              (2) Versi "sinkron seluruh data" yang menyimpan SATU payload di mims/payload: bila mims/payload
+              berisi data MIMS yang valid dan belum ada data per-record, isinya dipakai lalu ditulis ulang ke
+              per-record (mims/payload dibiarkan, tidak dihapus/ditulis lagi; hapus manual bila sudah tidak perlu).
+   Auth     : Masuk ke Firebase memakai Authentication ANONIM (aktifkan di Firebase Console:
+              Authentication > Sign-in method > Anonymous). Rules dapat dibatasi ke auth != null.
+              Ini TIDAK menggantikan login MIMS (user/supervisor/admin) dan bukan pengaman penuh:
+              siapa pun yang membuka file ini bisa masuk anonim. Untuk keamanan kuat, pakai akun Email/Password.
+   ========================================================================== -->
+<script>
+(function(){
+ 'use strict';
+ const FIREBASE_CONFIG={
+  apiKey:'AIzaSyB18-5KeRXB4VUJhZ2bsDH0hbGui8DTyQQ',
+  authDomain:'mims-database.firebaseapp.com',
+  databaseURL:'https://mims-database-default-rtdb.asia-southeast1.firebasedatabase.app',
+  projectId:'mims-database',
+  storageBucket:'mims-database.firebasestorage.app',
+  messagingSenderId:'934188939152',
+  appId:'1:934188939152:web:60ac046279293cda616515'
+ };
+ const ROOT='mims';
+ const COLS=['items','tx','reqs','reqForms','reqArchive','opnames','pics'];
+ const DESC={reqForms:true,reqArchive:true};      // koleksi yang memakai unshift (terbaru di depan)
+ const NESTED=['reqForms','reqArchive'];          // record yang punya array items di dalamnya
+ const SDK='https://www.gstatic.com/firebasejs/10.8.0/';
+ const DIRTY_KEY='mims_fb_dirty', DEV_KEY='mims_fb_device', BASE_KEY='mims_fb_base_v1';
 
-<!-- Sinkronisasi seluruh state MIMS ke Realtime Database pada /mims/payload -->
-<script type="module">
-  import { initializeApp, getApps } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
-  import {
-    getDatabase, ref, set, onValue, get
-  } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js";
+ let fb=null, db=null, auth=null;   // modul SDK & instance Firebase
+ let bootDone=false;                // true setelah boot aplikasi selesai (mimsFbStart dipanggil)
+ let ready=false;                   // true setelah sinkron awal selesai
+ let hasBase=false;                 // true bila base tersimpan dari sesi sebelumnya
+ let connected=false, errMsg='';
+ let lastP=null;                    // snapshot Firebase terakhir (sudah diurai)
+ const base={}, seq={}, rewrite={}; // base[c]: Map kunci->hash | seq[c]: Map kunci->nomor urut | rewrite[c]: tulis ulang node (migrasi)
+ COLS.forEach(c=>{base[c]=new Map();seq[c]=new Map();rewrite[c]=false});
+ let timer=null, baseTimer=null, pushing=false, again=false, renderWait=false;
 
-  const firebaseConfig = {
-    databaseURL: "https://mims-database-default-rtdb.asia-southeast1.firebasedatabase.app"
-  };
+ /* ---------- Util ---------- */
+ const clone=x=>JSON.parse(JSON.stringify(x));
+ const lsGet=k=>{try{return localStorage.getItem(k)}catch(e){return null}};
+ const lsSet=(k,v)=>{try{localStorage.setItem(k,v)}catch(e){}};
+ const lsDel=k=>{try{localStorage.removeItem(k)}catch(e){}};
+ function deviceId(){let d=lsGet(DEV_KEY);if(!d){d='dev-'+Math.random().toString(36).slice(2,8);lsSet(DEV_KEY,d)}return d}
 
-  const app = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
-  const database = getDatabase(app);
-  const payloadRef = ref(database, "mims/payload");
-  let applyingRemote = false;
-  let lastRemoteJson = "";
-  let writeInProgress = Promise.resolve();
+ /** Firebase menyimpan array sebagai objek berindeks dan membuang nilai kosong; ini mengembalikannya menjadi array. */
+ function arr(v){
+  if(Array.isArray(v))return v.filter(x=>x!=null);
+  if(v&&typeof v==='object')return Object.keys(v).sort((a,b)=>a-b).map(k=>v[k]).filter(x=>x!=null);
+  return [];
+ }
 
-  const setStatus = (message, kind = "normal") => {
-    const el = document.getElementById("mims-firebase-sync-status");
-    if (!el) return;
-    el.textContent = "Firebase: " + message;
-    el.style.background = kind === "ok" ? "#176b3a" :
-                          kind === "error" ? "#a32626" : "#263238";
-  };
-  window.__mimsFirebaseSetStatus = setStatus;
-
-  const validMimsPayload = value =>
-    value && typeof value === "object" &&
-    Array.isArray(value.items) && Array.isArray(value.tx);
-
-  const persistRemoteToLocal = async value => {
-    if (!validMimsPayload(value)) {
-      console.error("[MIMS Firebase] Payload tidak sesuai struktur MIMS:", value);
-      setStatus("payload tidak valid", "error");
-      return;
-    }
-    const remoteJson = JSON.stringify(value);
-    if (remoteJson === JSON.stringify(window.S || {})) {
-      lastRemoteJson = remoteJson;
-      setStatus("tersinkron", "ok");
-      return;
-    }
-
-    applyingRemote = true;
-    try {
-      // Mengganti state aplikasi dengan payload terbaru, lalu menyimpan ke IndexedDB.
-      window.__mimsApplyRemotePayload(value);
-      lastRemoteJson = remoteJson;
-      setStatus("data terbaru diterima", "ok");
-    } catch (error) {
-      console.error("[MIMS Firebase] Gagal menerapkan payload:", error);
-      setStatus("gagal menerapkan data", "error");
-    } finally {
-      applyingRemote = false;
-    }
-  };
-
-  // Dipanggil oleh save() setiap kali ada perubahan pada data utama MIMS.
-  window.__mimsFirebaseWrite = json => {
-    if (applyingRemote) return Promise.resolve();
-    let value;
-    try { value = JSON.parse(json); }
-    catch (error) { return Promise.reject(error); }
-    if (!validMimsPayload(value)) {
-      return Promise.reject(new Error("Struktur data MIMS tidak valid; payload tidak dikirim."));
-    }
-    const outgoingJson = JSON.stringify(value);
-    if (outgoingJson === lastRemoteJson) {
-      setStatus("tersinkron", "ok");
-      return Promise.resolve();
-    }
-
-    // Antrekan penulisan agar urutan perubahan dari satu browser tetap terjaga.
-    writeInProgress = writeInProgress.then(() => set(payloadRef, value)).then(() => {
-      lastRemoteJson = outgoingJson;
-      setStatus("tersinkron", "ok");
-    });
-    setStatus("mengirim data...", "normal");
-    return writeInProgress;
-  };
-
-  // Terapkan data Firebase ke state MIMS dan IndexedDB tanpa memicu echo write.
-  window.__mimsApplyRemotePayload = value => {
-    if (!validMimsPayload(value)) throw new Error("Payload Firebase bukan data MIMS yang valid.");
-    window.S = value;
-    if (!Array.isArray(window.S.reqs)) window.S.reqs = [];
-    if (!Array.isArray(window.S.reqForms)) window.S.reqForms = [];
-    if (!Array.isArray(window.S.reqArchive)) window.S.reqArchive = [];
-    if (!Array.isArray(window.S.opnames)) window.S.opnames = [];
-    if (!Array.isArray(window.S.pics)) window.S.pics = [];
-    if (!window.S.meta || typeof window.S.meta !== "object") window.S.meta = {};
-    window.__mimsPersistRemote(JSON.stringify(window.S));
-    window.__mimsRefreshAfterRemote();
-  };
-
-  try {
-    setStatus("menunggu data lokal MIMS...");
-    if (window.__mimsAppReady) await window.__mimsAppReady;
-    setStatus("memeriksa database...");
-    const initial = await get(payloadRef);
-    if (initial.exists()) {
-      const remote = initial.val();
-      if (!validMimsPayload(remote)) {
-        throw new Error("Data /mims/payload ditemukan tetapi strukturnya bukan payload MIMS.");
-      }
-      await persistRemoteToLocal(remote);
-    } else {
-      // Database masih kosong: unggah state lokal yang sudah dimuat oleh MIMS.
-      const localJson = window.__mimsGetLocalPayload();
-      if (localJson) await window.__mimsFirebaseWrite(localJson);
-      else setStatus("menunggu data MIMS", "normal");
-    }
-
-    onValue(payloadRef, snapshot => {
-      if (!snapshot.exists()) return;
-      const value = snapshot.val();
-      const incomingJson = JSON.stringify(value);
-      if (incomingJson === lastRemoteJson) return;
-      persistRemoteToLocal(value);
-    }, error => {
-      console.error("[MIMS Firebase] Listener error:", error);
-      setStatus("gagal membaca database", "error");
-    });
-
-    setStatus("terhubung", "ok");
-  } catch (error) {
-    console.error("[MIMS Firebase] Inisialisasi/sinkronisasi gagal:", error);
-    setStatus("gagal terhubung", "error");
+ /** Bentuk teks stabil: kunci diurutkan; null, array kosong, dan objek kosong diabaikan (Firebase membuangnya). */
+ function canon(v){
+  if(Array.isArray(v))return '['+v.map(canon).join(',')+']';
+  if(v&&typeof v==='object'){
+   const ks=Object.keys(v).filter(k=>{
+    const x=v[k];
+    if(x===undefined||x===null)return false;
+    if(Array.isArray(x))return x.length>0;
+    if(typeof x==='object')return Object.keys(x).length>0;
+    return true;
+   }).sort();
+   return '{'+ks.map(k=>JSON.stringify(k)+':'+canon(v[k])).join(',')+'}';
   }
+  return JSON.stringify(v===undefined?null:v);
+ }
 
-  // Saat koneksi pulih, kirim state lokal terakhir ke Firebase.
-  window.addEventListener("online", () => {
-    const localJson = window.__mimsGetLocalPayload();
-    if (localJson) window.__mimsFirebaseWrite(localJson)
-      .catch(error => {
-        console.error("[MIMS Firebase] Sinkronisasi ulang gagal:", error);
-        setStatus("gagal sinkron ulang", "error");
-      });
+ /** Hash 53-bit (cyrb53) dari teks; dipakai membandingkan record tanpa menyimpan isinya. */
+ function hash(s){
+  let h1=0xdeadbeef,h2=0x41c6ce57;
+  for(let i=0,ch;i<s.length;i++){ch=s.charCodeAt(i);h1=Math.imul(h1^ch,2654435761);h2=Math.imul(h2^ch,1597334677)}
+  h1=Math.imul(h1^(h1>>>16),2246822507)^Math.imul(h2^(h2>>>13),3266489909);
+  h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
+  return (4294967296*(2097151&h2)+(h1>>>0)).toString(36);
+ }
+ const recHash=rec=>hash(canon(rec));
+
+ /** Kunci node Firebase dari id record: awalan "k" + id (karakter terlarang . $ # [ ] / % di-encode). */
+ const encKey=id=>'k'+String(id).replace(/[.$#\[\]\/%]/g,ch=>'%'+ch.charCodeAt(0).toString(16).toUpperCase());
+ const newId=()=>(typeof uid==='function'?uid():Math.random().toString(36).slice(2,9));
+
+ /* ---------- Lencana status di sidebar ---------- */
+ function refreshStatus(){
+  const el=document.getElementById('fbStatus');
+  if(!el)return;
+  let t,c;
+  if(errMsg){t='⚠️ Firebase: '+errMsg;c='var(--er)'}
+  else if(!bootDone||!fb){t='☁️ Firebase: menghubungkan…';c='var(--mt)'}
+  else if(!connected){t='☁️ Offline (tersimpan lokal)';c='var(--wa)'}
+  else if(!ready||pushing||lsGet(DIRTY_KEY)==='1'){t='☁️ Menyinkronkan…';c='var(--wa)'}
+  else{t='☁️ Firebase: tersinkron';c='var(--ok)'}
+  el.textContent=t;el.style.color=c;el.title=errMsg||'Sinkronisasi Firebase Realtime Database';
+ }
+
+ /* ---------- Tampilan ---------- */
+ /** True bila pengguna sedang mengisi form (jangan gambar ulang agar isian tidak hilang). */
+ function formBusy(){
+  const app=document.getElementById('app');
+  if(!app)return false;
+  const a=document.activeElement;
+  if(a&&app.contains(a)&&/^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName))return true;
+  if(['in','out','req','opname','master','pic'].includes(V)){
+   return [...app.querySelectorAll('input:not([type=checkbox]):not([type=radio]),textarea')].some(x=>String(x.value||'').trim()!=='');
+  }
+  return false;
+ }
+ function refreshUI(){
+  if(typeof currentUser==='undefined'||!currentUser)return;
+  try{renderNav()}catch(e){}
+  if(formBusy()){
+   if(!renderWait){
+    renderWait=true;
+    const iv=setInterval(()=>{
+     if(!currentUser){clearInterval(iv);renderWait=false;return}
+     if(!formBusy()){clearInterval(iv);renderWait=false;try{render()}catch(e){console.error(e)}}
+    },1500);
+   }
+   return;
+  }
+  try{render()}catch(e){console.error('[MIMS] Gagal menggambar ulang:',e)}
+ }
+
+ /* ---------- Penyimpanan base & cadangan (IndexedDB) ---------- */
+ function backup(prefix,obj){
+  try{dataPut(JSON.stringify(obj),prefix+Date.now()).catch(e=>console.error('[MIMS] Cadangan gagal:',e))}catch(e){}
+ }
+ /** Membaca base tersimpan; null bila tidak ada/rusak. */
+ function baseGet(){
+  return dataDb().then(d=>new Promise((res,rej)=>{
+   const q=d.transaction(DATA_STORE,'readonly').objectStore(DATA_STORE).get(BASE_KEY);
+   q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error);
+  })).then(raw=>{
+   try{const o=typeof raw==='string'?JSON.parse(raw):raw;return o&&o.v===1&&o.cols?o:null}catch(e){return null}
+  }).catch(()=>null);
+ }
+ /** Menyimpan base lewat antrean penulisan yang sama dengan save() agar urutannya benar. */
+ function scheduleSaveBase(){
+  clearTimeout(baseTimer);
+  baseTimer=setTimeout(()=>{
+   const cols={};COLS.forEach(c=>{cols[c]=Object.fromEntries(base[c])});
+   const json=JSON.stringify({v:1,cols});
+   try{saveChain=saveChain.then(()=>dataPut(json,BASE_KEY)).catch(e=>console.error('[MIMS] Gagal menyimpan base sinkron:',e))}catch(e){}
+  },800);
+ }
+
+ /* ---------- Peta record ---------- */
+ /** Peta kunci -> {rec,h} dari S[c]. Record tanpa id / id ganda diberi id baru. */
+ function localMap(c){
+  const m=new Map(), seen=new Set();
+  (S[c]||[]).forEach(rec=>{
+   if(!rec||typeof rec!=='object')return;
+   let id=rec.id;
+   if(id==null||id===''||seen.has(String(id))){id=rec.id=newId()}
+   seen.add(String(id));
+   m.set(encKey(id),{rec,h:recHash(rec)});
   });
-</script></html>
+  return m;
+ }
+
+ /** Mengurai isi Firebase menjadi peta per koleksi; mengenali format lama (array) untuk migrasi. */
+ function parseRemote(v){
+  const maps={}, legacy={};
+  COLS.forEach(c=>{
+   const node=v&&v[c], m=new Map();
+   const isLegacy=Array.isArray(node)||!!(node&&typeof node==='object'&&Object.keys(node).some(k=>k[0]!=='k'));
+   legacy[c]=isLegacy;
+   if(node&&typeof node==='object'){
+    let list;
+    if(isLegacy){const a=arr(node);list=a.map((rec,idx)=>[rec,DESC[c]?a.length-idx:idx+1])}
+    else list=Object.keys(node).map(k=>[node[k],Number(node[k]&&node[k]._i)||0]);
+    list.forEach(([r,i])=>{
+     if(!r||typeof r!=='object'||r.id==null||r.id==='')return;
+     const rec=clone(r);delete rec._i;
+     if(NESTED.includes(c))rec.items=arr(rec.items);
+     m.set(encKey(rec.id),{rec,h:recHash(rec),i});
+    });
+   }
+   maps[c]=m;
+  });
+  return {maps,legacy};
+ }
+
+ /** Memberi nomor urut pada record lokal yang belum punya (urutan sesuai posisi di array). */
+ function ensureSeq(c,L){
+  let mx=0;seq[c].forEach(v=>{if(v>mx)mx=v});
+  const ks=[...L.keys()];if(DESC[c])ks.reverse();
+  ks.forEach(k=>{if(!seq[c].has(k))seq[c].set(k,++mx)});
+ }
+
+ /** Menyusun ulang S[c] dari peta L menurut nomor urut (koleksi DESC: terbaru di depan). */
+ function rebuild(c,L){
+  ensureSeq(c,L);
+  const ents=[...L.entries()];
+  ents.sort((a,b)=>{
+   const d=(seq[c].get(a[0])||0)-(seq[c].get(b[0])||0);
+   return d!==0?(DESC[c]?-d:d):(a[0]<b[0]?-1:1);
+  });
+  S[c]=ents.map(e=>e[1].rec);
+ }
+
+ /** True bila isi lokal berbeda dari Firebase. */
+ function differs(P){
+  return COLS.some(c=>{
+   const L=localMap(c),R=P.maps[c];
+   if(L.size!==R.size)return true;
+   for(const [k,v] of L){const r=R.get(k);if(!r||r.h!==v.h)return true}
+   return false;
+  });
+ }
+
+ /* ---------- Merge tiga arah ---------- */
+ /** Menggabungkan snapshot Firebase ke S per record. Hasil: {adopted, pushNeeded}. */
+ function merge(P){
+  let adopted=false, pushNeeded=false;
+  COLS.forEach(c=>{
+   const R=P.maps[c], L=localMap(c), B=base[c];
+   R.forEach((r,k)=>{seq[c].set(k,r.i)});
+   const keys=new Set([...R.keys(),...L.keys(),...B.keys()]);
+   const take=[];
+   keys.forEach(k=>{
+    const b=B.get(k), l=L.has(k)?L.get(k).h:undefined, r=R.has(k)?R.get(k).h:undefined;
+    const lc=l!==b, rc=r!==b;
+    if(!lc&&rc)take.push(k);                              // hanya Firebase berubah
+    else if(lc&&!rc)pushNeeded=true;                      // hanya lokal berubah
+    else if(lc&&rc){                                      // keduanya berubah
+     if(l===r){if(l===undefined)B.delete(k);else B.set(k,l)}   // hasilnya sama
+     else pushNeeded=true;                                // beda: lokal menang
+    }
+   });
+   if(take.length){
+    take.forEach(k=>{
+     const r=R.get(k);
+     if(r){L.set(k,{rec:clone(r.rec),h:r.h});B.set(k,r.h)}
+     else{L.delete(k);B.delete(k);seq[c].delete(k)}
+    });
+    rebuild(c,L);
+    adopted=true;
+   }
+  });
+  return {adopted,pushNeeded};
+ }
+
+ /** Persiapan sinkron awal: menyiapkan base agar merge menghasilkan perilaku yang aman. */
+ function prepareFirst(P){
+  const rEmpty=!COLS.some(c=>P.maps[c].size>0);
+  COLS.forEach(c=>{if(P.legacy[c])rewrite[c]=true});
+  if(hasBase){
+   // Penjaga: bila data lokal tampak hilang (mis. data contoh menggantikan data rusak), pulihkan dari Firebase.
+   COLS.forEach(c=>{
+    const L=localMap(c),B=base[c];let miss=0;
+    B.forEach((h,k)=>{if(!L.has(k))miss++});
+    if(B.size>=10&&miss/B.size>0.5){
+     L.forEach((v,k)=>B.set(k,v.h));B.forEach((h,k)=>{if(!L.has(k))B.delete(k)});
+     try{toast('Data lokal tidak lengkap, dipulihkan dari Firebase')}catch(e){}
+    }
+   });
+   return;
+  }
+  if(rEmpty)return;                                   // Firebase kosong: semua data lokal dianggap baru -> diunggah
+  if(lsGet(DIRTY_KEY)==='1'){
+   backup('cadangan_firebase_',{maps:Object.fromEntries(COLS.map(c=>[c,[...P.maps[c].values()].map(x=>x.rec)]))});
+   COLS.forEach(c=>{const L=localMap(c);P.maps[c].forEach((r,k)=>{if(L.has(k))base[c].set(k,r.h)})});   // lokal menang untuk record yang sama
+  }else{
+   if(differs(P))backup('cadangan_sebelum_sync_',{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,meta:S.meta});
+   COLS.forEach(c=>{localMap(c).forEach((v,k)=>base[c].set(k,v.h))});                                  // lokal dianggap tidak berubah -> Firebase menang
+  }
+ }
+
+ /** Payload lama (mims/payload) berisi data MIMS yang valid? */
+ const validPayload=v=>!!(v&&typeof v==='object'&&Array.isArray(v.items)&&Array.isArray(v.tx));
+
+ function onSnap(snap){
+  errMsg='';
+  const raw=snap.val();
+  let P=parseRemote(raw), fromPayload=false;
+  const first=!ready;
+  if(first&&!hasBase&&!COLS.some(c=>P.maps[c].size>0)&&raw&&validPayload(raw.payload)){
+   P=parseRemote(raw.payload);fromPayload=true;       // migrasi dari mims/payload
+   COLS.forEach(c=>{rewrite[c]=true});                // tulis semua koleksi ke format per-record
+  }
+  lastP=P;
+  if(first){prepareFirst(P);ready=true}
+  const r=merge(P);
+  if(r.adopted){save();refreshUI();if(!first)try{toast('Data diperbarui dari perangkat lain')}catch(e){}}
+  if(fromPayload)try{toast('Data dari mims/payload dipindahkan ke format per-record')}catch(e){}
+  if(r.pushNeeded||COLS.some(c=>rewrite[c]))schedulePush(first?0:400);
+  scheduleSaveBase();
+  refreshStatus();
+ }
+ function onErr(e){
+  console.error('[MIMS] Gagal membaca Firebase:',e);
+  errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal membaca data';
+  refreshStatus();
+ }
+
+ /* ---------- MIMS -> Firebase ---------- */
+ function schedulePush(ms){clearTimeout(timer);timer=setTimeout(doPush,ms)}
+ const withSeq=(rec,i)=>{const o=clone(rec);o._i=i;return o};
+
+ /** Menyusun update atomik berisi record yang berbeda dari base. sent = [koleksi, kunci, hash|undefined]. */
+ function buildUpdates(){
+  const updates={}, sent=[];
+  COLS.forEach(c=>{
+   const L=localMap(c), B=base[c];
+   ensureSeq(c,L);
+   const bulk=rewrite[c]||(B.size===0&&L.size>=50&&lastP&&lastP.maps[c].size===0);
+   if(bulk){                                          // tulis seluruh node sekaligus (migrasi / unggah awal besar)
+    const obj={};
+    L.forEach((v,k)=>{obj[k]=withSeq(v.rec,seq[c].get(k));sent.push([c,k,v.h])});
+    B.forEach((h,k)=>{if(!L.has(k))sent.push([c,k,undefined])});
+    updates[ROOT+'/'+c]=Object.keys(obj).length?obj:null;
+    return;
+   }
+   L.forEach((v,k)=>{
+    if(v.h!==B.get(k)){updates[ROOT+'/'+c+'/'+k]=withSeq(v.rec,seq[c].get(k));sent.push([c,k,v.h])}
+   });
+   B.forEach((h,k)=>{
+    if(!L.has(k)){updates[ROOT+'/'+c+'/'+k]=null;sent.push([c,k,undefined])}
+   });
+  });
+  return {updates,sent};
+ }
+
+ async function doPush(){
+  if(!ready||!db)return;
+  if(pushing){again=true;return}
+  const {updates,sent}=buildUpdates();
+  if(!sent.length){lsDel(DIRTY_KEY);refreshStatus();return}
+  updates[ROOT+'/_sync']={at:fb.serverTimestamp(),by:(typeof currentUser!=='undefined'&&currentUser)||'-',device:deviceId()};
+  pushing=true;refreshStatus();
+  try{
+   await fb.update(fb.ref(db),updates);
+   sent.forEach(([c,k,h])=>{if(h===undefined)base[c].delete(k);else base[c].set(k,h)});
+   COLS.forEach(c=>{rewrite[c]=false});
+   errMsg='';
+  }catch(e){
+   console.error('[MIMS] Gagal mengirim ke Firebase:',e);
+   errMsg=(e&&/permission/i.test(String(e.message||e.code)))?'akses ditolak (periksa Rules)':'gagal mengirim data';
+   pushing=false;refreshStatus();
+   schedulePush(15000);                              // coba lagi
+   return;
+  }
+  pushing=false;
+  scheduleSaveBase();
+  if(again||buildUpdates().sent.length){again=false;schedulePush(0);return}
+  lsDel(DIRTY_KEY);
+  refreshStatus();
+ }
+
+ /** Dipanggil save() setiap data berubah. */
+ window.mimsFbPush=function(){
+  if(!bootDone)return;                              // save() saat boot (data contoh/migrasi) bukan perubahan pengguna
+  lsSet(DIRTY_KEY,'1');
+  if(ready)schedulePush(400);
+  refreshStatus();
+ };
+
+ /* ---------- Koneksi ---------- */
+ async function loadSdk(){
+  const [a,d,u]=await Promise.all([import(SDK+'firebase-app.js'),import(SDK+'firebase-database.js'),import(SDK+'firebase-auth.js')]);
+  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,update:d.update,serverTimestamp:d.serverTimestamp,
+          getAuth:u.getAuth,signInAnonymously:u.signInAnonymously};
+ }
+
+ /** Teks singkat penyebab error Firebase Auth / SDK, agar mudah didiagnosis dari lencana status. */
+ function hint(e){
+  const c=String((e&&(e.code||e.message))||e||'');
+  if(/operation-not-allowed|admin-restricted/.test(c))return 'aktifkan Anonymous di Authentication > Sign-in method';
+  if(/not-supported-in-this-environment/.test(c))return 'buka lewat http:// atau https://, bukan file://';
+  if(/api-key|invalid-api/.test(c))return 'API Key tidak valid';
+  if(/network|Failed to fetch|import/i.test(c))return 'tidak ada koneksi internet / CDN Firebase diblokir';
+  return c.slice(0,70);
+ }
+
+ async function connect(){
+  try{
+   fb=await loadSdk();
+  }catch(e){
+   console.error('[MIMS] SDK Firebase tidak dapat dimuat (mode offline):',e);
+   fb=null;errMsg='SDK tidak dapat dimuat ('+hint(e)+')';refreshStatus();return;
+  }
+  try{
+   const app=fb.initializeApp(FIREBASE_CONFIG);
+   db=fb.getDatabase(app);
+   auth=fb.getAuth(app);
+  }catch(e){
+   console.error('[MIMS] Inisialisasi Firebase gagal:',e);
+   fb=null;errMsg='inisialisasi gagal ('+hint(e)+')';refreshStatus();return;
+  }
+  const saved=await baseGet();
+  if(saved){
+   COLS.forEach(c=>{base[c]=new Map(Object.entries(saved.cols[c]||{}))});
+   hasBase=true;
+  }
+  try{
+   await fb.signInAnonymously(auth);               // login anonim ke Firebase (untuk Rules auth != null)
+  }catch(e){
+   console.error('[MIMS] Login anonim Firebase gagal:',e);
+   errMsg='login anonim gagal: '+hint(e);refreshStatus();
+  }                                                 // tetap lanjut: bila Rules masih terbuka, sinkronisasi tetap bisa
+  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();refreshStatus()});
+  fb.onValue(fb.ref(db,ROOT),onSnap,onErr);
+  refreshStatus();
+ }
+
+ /** Dipanggil dari boot aplikasi setelah data lokal selesai dimuat. */
+ window.mimsFbStart=function(){
+  if(bootDone)return;
+  bootDone=true;
+  refreshStatus();
+  connect();
+ };
+ // Saat koneksi internet pulih, coba kirim lagi perubahan yang tertunda.
+ window.addEventListener('online',()=>{if(ready)schedulePush(0)});
+ if(window.__mimsDataReady)window.mimsFbStart();
+})();
+</script>
+
+</body></html>
