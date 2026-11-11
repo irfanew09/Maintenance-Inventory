@@ -354,6 +354,7 @@ header{position:fixed;inset:0 auto 0 0;width:256px;background:var(--sf);color:va
 .top{width:100%;height:100%;padding:22px 16px;display:flex;flex-direction:column;align-items:stretch;gap:18px}
 .logo{font-size:17px;font-weight:700;margin:0;padding:0 8px 16px;border-bottom:1px solid var(--bd);color:var(--tx)}
 .logo span{color:var(--ac)}
+.logo .logo-sub{display:block;font-size:12.5px;line-height:1.35;font-weight:600;letter-spacing:.01em;color:var(--mt);margin-top:4px;white-space:normal;overflow-wrap:anywhere}
 .theme-bar{display:flex;flex-direction:column;gap:8px;padding:0 4px}
 .wib-badge{font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between}
 /* ======================================================================
@@ -484,7 +485,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    Aturan untuk layar <= 900px dan <= 680px (sidebar menjadi bar atas, grid menjadi satu kolom).
    ====================================================================== */
 @media(max-width:900px){header{width:220px}.top{padding:18px 12px}main{margin-left:220px;padding:24px 18px}.req-grid{grid-template-columns:1fr 1fr}}
-@media(max-width:680px){header{position:sticky;inset:auto;width:100%;height:auto;overflow:visible;border-right:0;border-bottom:1px solid var(--bd)}.top{height:auto;padding:12px 14px;gap:10px}.logo{font-size:16px;padding:0 4px 8px}.theme-bar{flex-direction:row;align-items:center;justify-content:space-between}nav{flex-direction:row;overflow-x:auto;padding-bottom:3px;gap:5px}nav button{width:auto;white-space:nowrap;min-height:36px;padding:6px 10px;font-size:12px}main{margin:0;padding:20px 14px 36px}h2{font-size:18px}.fm,.req-grid{grid-template-columns:1fr}.two{grid-template-columns:1fr}.card{padding:14px}.k{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:680px){header{position:sticky;inset:auto;width:100%;height:auto;overflow:visible;border-right:0;border-bottom:1px solid var(--bd)}.top{height:auto;padding:12px 14px;gap:10px}.logo{font-size:16px;padding:0 4px 8px}.logo .logo-sub{font-size:12px}.logo .logo-sub br{display:none}.theme-bar{flex-direction:row;align-items:center;justify-content:space-between}nav{flex-direction:row;overflow-x:auto;padding-bottom:3px;gap:5px}nav button{width:auto;white-space:nowrap;min-height:36px;padding:6px 10px;font-size:12px}main{margin:0;padding:20px 14px 36px}h2{font-size:18px}.fm,.req-grid{grid-template-columns:1fr}.two{grid-template-columns:1fr}.card{padding:14px}.k{grid-template-columns:repeat(2,minmax(0,1fr))}}
 /* ======================================================================
    BAGIAN 11: DONUT KONDISI STOK & STATUS REQUEST
    Dipakai dashboardStatusChartsHtml() (JS bagian 10): .status-donut (SVG), .status-donut-hole (angka Total),
@@ -531,7 +532,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
  ================================================================== -->
 <header>
  <div class="top">
-  <div class="logo">📦 <span>MIMS</span><small style="display:block;font-size:11px;font-weight:500;color:var(--mt);margin-top:2px">Maintenance Inventory Management</small></div>
+  <div class="logo">📦 <span>MIMS</span><small class="logo-sub">Maintenance Inventory<br>Management System</small></div>
   <div class="theme-bar">
    <button id="themeBtn" class="btn s" onclick="toggleTheme()" style="width:100%;justify-content:center;font-weight:600">🌙 Mode Gelap</button>
    <div class="wib-badge"><span>🕒 Zona Waktu</span><b id="wibClock">WIB (UTC+7)</b></div>
