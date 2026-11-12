@@ -263,6 +263,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 23 : Tabel "Akun Online" di bagian bawah sidebar kiri: menampilkan username akun yang sedang login (titik hijau). Status online antar perangkat
+             lewat Firebase mims_meta/presence (heartbeat 30 dtk, hilang otomatis saat logout/tab ditutup).
  Update 22 : Fitur harga dihapus total (data items.price dibuang saat dimuat, kolom 'harga' dihapus dari CSV/template, helper rp() dihapus).
              Halaman login: label 'Username (Akun PIC)'; blok 'Akun Uji Coba' dihapus.
  Update 21 : Hak akses diubah. Admin = Daftar Suku Cadang, Request, Proses Request, Masuk, Keluar, Transaksi Terakhir, Stock Opname.
@@ -372,6 +374,13 @@ header{position:fixed;inset:0 auto 0 0;width:256px;background:var(--sf);color:va
 .logo span{color:var(--ac)}
 .logo .logo-sub{display:block;font-size:12.5px;line-height:1.35;font-weight:600;letter-spacing:.01em;color:var(--mt);margin-top:4px;white-space:normal;overflow-wrap:anywhere}
 .theme-bar{display:flex;flex-direction:column;gap:8px;padding:0 4px}
+.online-panel{margin-top:auto;flex-shrink:0;border:1px solid var(--bd);border-radius:8px;background:var(--sf2);overflow:hidden}
+.online-panel table{width:100%;border-collapse:collapse;font-size:12px}
+.online-panel th{text-align:left;padding:7px 10px;font-size:11px;color:var(--mt);border-bottom:1px solid var(--bd);font-weight:600}
+.online-panel td{padding:5px 10px;word-break:break-all}
+.online-panel tbody{display:block;max-height:150px;overflow-y:auto}
+.online-panel thead,.online-panel tbody tr{display:table;width:100%;table-layout:fixed}
+.on-dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#22c55e;box-shadow:0 0 0 2px rgba(34,197,94,.25);margin-right:8px;vertical-align:middle}
 .wib-badge{font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between}
 /* ======================================================================
    BAGIAN 3: MENU SIDEBAR & TOMBOL
@@ -551,6 +560,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    <button class="btn s d" onclick="doLogout()" style="width:100%;justify-content:center">🚪 Keluar (Logout)</button>
   </div>
   <nav id="nav"></nav>
+  <div id="onlinePanel" class="online-panel" style="display:none"><table><thead><tr><th>Username · Online <span id="onlineCount"></span></th></tr></thead><tbody id="onlineList"></tbody></table></div>
  </div>
 </header>
 <!-- ==================================================================
@@ -765,6 +775,7 @@ function toggleTheme(){
 let S={items:[],tx:[],reqs:[],reqForms:[],reqArchive:[],opnames:[],pics:[],meta:{}};
 
 /* Sesi & navigasi */
+let currentUsername=null;   // username login yang sedang aktif (untuk tabel Akun Online)
 let currentUser=null;   // null (belum login) | 'user' | 'supervisor' | 'admin'
 let V='dash';           // id tab yang sedang tampil (lihat TABS)
 let editId=null;        // id barang yang sedang diedit di form Master Barang (null = tambah baru)
@@ -1128,6 +1139,7 @@ async function doLogin(){
  }
  if(err)err.style.display='none';
  currentUser=role;currentPicId=picId;
+ currentUsername=picId?((S.pics||[]).find(x=>x.id===picId)||{}).username||u:u;
  try{sessionStorage.setItem('wh_session_v1',sess)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
  const acc=ACCOUNTS[role];
  if(!acc.tabs.includes(V))V='dash';
@@ -1137,9 +1149,10 @@ async function doLogin(){
   render();
   $('#loginOverlay').style.display='none';
   toast('Berhasil masuk sebagai '+label);
+  try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
   return true;
  }catch(e){
-  currentUser=null;currentPicId=null;
+  currentUser=null;currentPicId=null;currentUsername=null;
   try{sessionStorage.removeItem('wh_session_v1')}catch(ignore){}
   $('#loginOverlay').style.display='flex';
   if(err){err.textContent='Login diterima, tetapi dashboard gagal dibuka: '+String(e?.message||e);err.style.display='block'}
@@ -1150,7 +1163,8 @@ async function doLogin(){
 
 /** Menghapus sesi, mengosongkan form, menampilkan kembali overlay login. */
 function doLogout(){
- currentUser=null;currentPicId=null;
+ currentUser=null;currentPicId=null;currentUsername=null;
+ try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  try{sessionStorage.removeItem('wh_session_v1')}catch(e){}
  $('#loginOverlay').style.display='flex';
  $('#loginUser').value='';
@@ -1162,7 +1176,7 @@ function checkSession(){
  try{
   const saved=sessionStorage.getItem('wh_session_v1');
   if(saved&&Object.hasOwn(ACCOUNTS,saved)){
-   currentUser=saved;currentPicId=null;
+   currentUser=saved;currentPicId=null;currentUsername=saved;
    $('#loginOverlay').style.display='none';
    const acc=ACCOUNTS[saved];
    $('#currentUserBadge').innerHTML=`<span>👤 ${acc.name}</span>`;
@@ -1171,7 +1185,7 @@ function checkSession(){
   if(saved&&saved.startsWith('pic:')){
    const pic=(S.pics||[]).find(x=>x.id===saved.slice(4)&&x.username&&x.passHash&&x.active!==false);
    if(pic){
-    currentUser=picRole(pic);currentPicId=pic.id;
+    currentUser=picRole(pic);currentPicId=pic.id;currentUsername=pic.username;
     $('#loginOverlay').style.display='none';
     $('#currentUserBadge').innerHTML=`<span>👤 ${esc('PIC: '+pic.name+(pic.title?' ('+pic.title+')':'')+' · '+roleLabel(picRole(pic)))}</span>`;
     return;
@@ -3762,6 +3776,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  try{abInit()}catch(e){}
  checkSession();
  if(currentUser){renderNav();go('dash');}
+ try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  window.__mimsDataReady=true;   // data lokal siap -> mulai sinkronisasi Firebase ([22])
  try{window.mimsFbStart&&window.mimsFbStart()}catch(e){console.error('[MIMS] Firebase:',e)}
 });
@@ -4166,10 +4181,55 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   refreshStatus();
  };
 
+ /* ---------- Akun Online (presence) ---------- */
+ const PRES_PATH='mims_meta/presence';
+ let presRemote={}, presOffset=0, presTimer=null;
+ function sessId(){let d=null;try{d=sessionStorage.getItem('mims_pres_sid')}catch(e){}if(!d){d='s'+Math.random().toString(36).slice(2,10);try{sessionStorage.setItem('mims_pres_sid',d)}catch(e){}}return d}
+ const presKey=()=>deviceId()+'_'+sessId();
+ const presUser=()=>(typeof currentUser!=='undefined'&&currentUser&&typeof currentUsername!=='undefined'&&currentUsername)||null;
+
+ /** Menggambar tabel Akun Online: hanya akun yang sedang login (data Firebase yang masih segar + sesi ini). */
+ function renderOnline(){
+  const panel=document.getElementById('onlinePanel'),list=document.getElementById('onlineList'),cnt=document.getElementById('onlineCount');
+  if(!panel||!list)return;
+  const me=presUser();
+  if(!me){panel.style.display='none';return}
+  const now=Date.now()+presOffset,m=new Map();
+  Object.values(presRemote||{}).forEach(v=>{
+   if(!v||!v.u)return;
+   const at=Number(v.at)||0;
+   if(at&&now-at>120000)return;            // heartbeat basi (tab mati tanpa logout) -> dianggap offline
+   m.set(String(v.u).toLowerCase(),String(v.u));
+  });
+  m.set(String(me).toLowerCase(),String(me));
+  const names=[...m.values()].sort((a,b)=>a.localeCompare(b,'id'));
+  list.innerHTML=names.map(n=>'<tr><td><span class="on-dot"></span>'+String(n).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c])+'</td></tr>').join('');
+  if(cnt)cnt.textContent='('+names.length+')';
+  panel.style.display='';
+ }
+
+ /** Dipanggil saat login/logout/pemulihan sesi/koneksi pulih: mendaftarkan atau menghapus status online sesi ini. */
+ function presSync(){
+  renderOnline();
+  if(!fb||!db)return;
+  try{
+   const r=fb.ref(db,PRES_PATH+'/'+presKey()),u=presUser();
+   clearInterval(presTimer);presTimer=null;
+   if(!u){fb.remove(r).catch(()=>{});return}
+   const beat=()=>fb.set(r,{u:String(u),at:fb.serverTimestamp()}).catch(()=>{});
+   fb.onDisconnect(r).remove().catch(()=>{});
+   beat();
+   presTimer=setInterval(beat,30000);
+  }catch(e){console.error('[MIMS] Presence:',e)}
+ }
+ window.mimsPresenceSync=presSync;
+ setInterval(renderOnline,30000);
+ window.addEventListener('pagehide',()=>{try{if(fb&&db)fb.remove(fb.ref(db,PRES_PATH+'/'+presKey()))}catch(e){}});
+
  /* ---------- Koneksi ---------- */
  async function loadSdk(){
   const [a,d,u]=await Promise.all([import(SDK+'firebase-app.js'),import(SDK+'firebase-database.js'),import(SDK+'firebase-auth.js')]);
-  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,update:d.update,serverTimestamp:d.serverTimestamp,
+  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,update:d.update,set:d.set,remove:d.remove,onDisconnect:d.onDisconnect,serverTimestamp:d.serverTimestamp,
           getAuth:u.getAuth,signInAnonymously:u.signInAnonymously};
  }
 
@@ -4219,7 +4279,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    console.error('[MIMS] Login anonim Firebase gagal:',e);
    errMsg='login anonim gagal: '+hint(e);refreshStatus();
   }                                                 // tetap lanjut: bila Rules masih terbuka, sinkronisasi tetap bisa
-  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();dlog('Koneksi RTDB',connected?'tersambung':'terputus');refreshStatus()});
+  fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();dlog('Koneksi RTDB',connected?'tersambung':'terputus');refreshStatus();if(connected)presSync()});
+  fb.onValue(fb.ref(db,'.info/serverTimeOffset'),s=>{presOffset=Number(s.val())||0;renderOnline()},()=>{});
+  fb.onValue(fb.ref(db,PRES_PATH),s=>{presRemote=s.val()||{};renderOnline()},()=>{});   // Akun Online (gagal diam-diam bila Rules belum mengizinkan)
   fb.onValue(fb.ref(db,ROOT),onSnapDebounced,onErr);   // Optimasi B: event beruntun digabung
   refreshStatus();
  }
