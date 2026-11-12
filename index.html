@@ -263,6 +263,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 24 : Ganti Password (akun PIC, tombol di sidebar), kolom Password di Master PIC (lihat/sembunyikan, hanya User), dan Lupa Password di halaman login
+             (isi username -> password tampil). Password PIC kini juga disimpan dalam bentuk teks (field pw) agar bisa ditampilkan.
  Update 23 : Tabel "Akun Online" di bagian bawah sidebar kiri: menampilkan username akun yang sedang login (titik hijau). Status online antar perangkat
              lewat Firebase mims_meta/presence (heartbeat 30 dtk, hilang otomatis saat logout/tab ditutup).
  Update 22 : Fitur harga dihapus total (data items.price dibuang saat dimuat, kolom 'harga' dihapus dari CSV/template, helper rp() dihapus).
@@ -374,6 +376,10 @@ header{position:fixed;inset:0 auto 0 0;width:256px;background:var(--sf);color:va
 .logo span{color:var(--ac)}
 .logo .logo-sub{display:block;font-size:12.5px;line-height:1.35;font-weight:600;letter-spacing:.01em;color:var(--mt);margin-top:4px;white-space:normal;overflow-wrap:anywhere}
 .theme-bar{display:flex;flex-direction:column;gap:8px;padding:0 4px}
+.pw-dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
+.pw-card{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:14px;padding:22px;width:100%;max-width:380px;display:flex;flex-direction:column;gap:6px;box-shadow:var(--shadow)}
+.pw-card h3{margin:0 0 4px}
+.pw-err{display:none;font-size:12px;color:var(--er);background:var(--er-bg);border:1px solid var(--er);border-radius:8px;padding:8px 10px;margin-top:6px}
 .online-panel{margin-top:auto;flex-shrink:0;border:1px solid var(--bd);border-radius:8px;background:var(--sf2);overflow:hidden}
 .online-panel table{width:100%;border-collapse:collapse;font-size:12px}
 .online-panel th{text-align:left;padding:7px 10px;font-size:11px;color:var(--mt);border-bottom:1px solid var(--bd);font-weight:600}
@@ -541,6 +547,13 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    <div id="loginErr" role="alert" aria-live="polite" style="display:none;font-size:12px;color:var(--er);background:var(--er-bg);border:1px solid var(--er);border-radius:8px;padding:8px 10px"></div>
    <button id="loginSubmit" type="submit" class="btn p" style="margin-top:8px;min-height:42px">Masuk ke Dashboard</button>
   </form>
+  <div style="text-align:center;margin-top:12px"><button type="button" id="forgotLink" onclick="toggleForgot()" style="background:none;border:0;color:var(--ac);text-decoration:underline;cursor:pointer;font:inherit;font-size:13px">Lupa password?</button></div>
+  <div id="forgotBox" style="display:none;margin-top:10px;flex-direction:column;gap:8px">
+   <label for="forgotUser">Username</label>
+   <input id="forgotUser" autocomplete="off" onkeydown="if(event.key==='Enter'){event.preventDefault();doForgot()}">
+   <button type="button" class="btn p" onclick="doForgot()" style="min-height:40px">Tampilkan Password</button>
+   <div id="forgotRes" class="pw-err" role="alert" aria-live="polite"></div>
+  </div>
  </div>
 </div>
 
@@ -557,6 +570,7 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
    <div class="wib-badge"><span>🕒 Zona Waktu</span><b id="wibClock">WIB (UTC+7)</b></div>
    <div id="currentUserBadge" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px;display:flex;align-items:center;justify-content:space-between"></div>
    <div id="fbStatus" style="font-size:11px;color:var(--mt);background:var(--sf2);border:1px solid var(--bd);border-radius:8px;padding:6px 10px">☁️ Firebase: menghubungkan…</div>
+   <button id="chgPwBtn" class="btn s" onclick="openChangePw()" style="width:100%;justify-content:center;display:none">🔑 Ganti Password</button>
    <button class="btn s d" onclick="doLogout()" style="width:100%;justify-content:center">🚪 Keluar (Logout)</button>
   </div>
   <nav id="nav"></nav>
@@ -1149,7 +1163,7 @@ async function doLogin(){
   render();
   $('#loginOverlay').style.display='none';
   toast('Berhasil masuk sebagai '+label);
-  try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
+  authUi();try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
   return true;
  }catch(e){
   currentUser=null;currentPicId=null;currentUsername=null;
@@ -1161,10 +1175,72 @@ async function doLogin(){
  }
 }
 
+/** Menampilkan tombol Ganti Password hanya untuk akun PIC yang sedang login. */
+function authUi(){const b=document.getElementById('chgPwBtn');if(b)b.style.display=curPic()?'':'none'}
+
+/** Lupa password: buka/tutup kotak isian username di halaman login. */
+function toggleForgot(){
+ const b=$('#forgotBox');if(!b)return;
+ const open=b.style.display==='none';
+ b.style.display=open?'flex':'none';
+ const r=$('#forgotRes');if(r)r.style.display='none';
+ if(open){$('#forgotUser').value='';$('#forgotUser').focus()}
+}
+
+/** Lupa password: bila username PIC benar, password langsung ditampilkan. */
+function doForgot(){
+ const u=($('#forgotUser')?.value||'').trim().toLowerCase(),out=$('#forgotRes');
+ if(!out)return;
+ const msg=(t,ok)=>{out.textContent='';out.style.display='block';
+  out.style.color=ok?'var(--ok)':'var(--er)';out.style.background=ok?'var(--ok-bg,var(--sf2))':'var(--er-bg)';out.style.borderColor=ok?'var(--ok)':'var(--er)';
+  if(ok){out.innerHTML='Password Anda: <b style="font-size:15px;user-select:all">'+esc(t)+'</b>'}else out.textContent=t};
+ if(!u)return msg('Isi username terlebih dahulu.');
+ const pic=(S.pics||[]).find(x=>x.username&&String(x.username).toLowerCase()===u);
+ if(!pic)return msg('Username tidak ditemukan.');
+ if(pic.active===false)return msg('Akun PIC ini nonaktif. Hubungi User.');
+ if(!pic.pw)return msg('Password akun ini belum tersimpan untuk fitur lupa password. Minta User mengatur ulang password di Master PIC.');
+ msg(pic.pw,true);
+}
+
+/** Dialog Ganti Password (khusus akun PIC yang sedang login). */
+function openChangePw(){
+ const cp=curPic();
+ if(!cp)return toast('Ganti password hanya tersedia untuk akun PIC.');
+ closeChangePw();
+ const d=document.createElement('div');d.id='pwDlg';d.className='pw-dlg';
+ d.innerHTML=`<div class="pw-card" role="dialog" aria-label="Ganti Password"><h3>🔑 Ganti Password</h3><p class="mt" style="margin:0 0 6px">Akun: <b>${esc(cp.username||cp.name)}</b></p>
+  <label for="pw_old">Password saat ini</label><input id="pw_old" type="password" autocomplete="current-password">
+  <label for="pw_new">Password baru (min. 6 karakter)</label><input id="pw_new" type="password" autocomplete="new-password">
+  <label for="pw_new2">Ulangi password baru</label><input id="pw_new2" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')saveChangePw()">
+  <div id="pw_err" class="pw-err" role="alert"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="closeChangePw()">Batal</button><button class="btn p" onclick="saveChangePw()">Simpan Password</button></div></div>`;
+ document.body.appendChild(d);
+ $('#pw_old').focus();
+}
+function closeChangePw(){const d=document.getElementById('pwDlg');if(d)d.remove()}
+
+/** Memvalidasi password lama, lalu menyimpan password baru (hash + salt baru) untuk PIC yang login. */
+async function saveChangePw(){
+ const cp=curPic(),err=$('#pw_err');
+ const fail=m=>{if(err){err.textContent=m;err.style.display='block'}return false};
+ if(!cp)return fail('Sesi PIC tidak valid. Silakan login ulang.');
+ const o=$('#pw_old').value,n=$('#pw_new').value,n2=$('#pw_new2').value;
+ if(!o||!n||!n2)return fail('Semua kolom wajib diisi.');
+ if(n.length<6)return fail('Password baru minimal 6 karakter.');
+ if(n!==n2)return fail('Ulangi password baru tidak sama.');
+ if(n===o)return fail('Password baru harus berbeda dari password saat ini.');
+ if(await hashPw(cp.salt||'',o)!==cp.passHash)return fail('Password saat ini salah.');
+ const p=S.pics.find(x=>x.id===cp.id);
+ if(!p)return fail('Data PIC tidak ditemukan.');
+ const salt=newSalt();
+ p.salt=salt;p.passHash=await hashPw(salt,n);p.pw=n;
+ save();closeChangePw();toast('Password berhasil diganti.');
+}
+
 /** Menghapus sesi, mengosongkan form, menampilkan kembali overlay login. */
 function doLogout(){
- currentUser=null;currentPicId=null;currentUsername=null;
- try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
+ currentUser=null;currentPicId=null;currentUsername=null;picPwShown=new Set();closeChangePw();
+ authUi();try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  try{sessionStorage.removeItem('wh_session_v1')}catch(e){}
  $('#loginOverlay').style.display='flex';
  $('#loginUser').value='';
@@ -2776,8 +2852,8 @@ function vMastersHome(){
 /** Tampilan Master PIC: form tambah/edit dan tabel daftar PIC. */
 function vPicMaster(){
  if(currentUser!=='user')return `<div class="card">Akses Master PIC hanya untuk User.</div>`;
- const rows=(S.pics||[]).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.title||'-')}</td><td>${p.username&&p.passHash?esc(p.username):'<span class="mt">Belum ada akun</span>'}</td><td>${p.username&&p.passHash?'<span class="b '+(picRole(p)==='user'?'er':picRole(p)==='supervisor'?'wa':'ok')+'">'+roleLabel(picRole(p))+'</span>':'-'}</td><td>${p.active===false?'<span class="b er">Nonaktif</span>':'<span class="b ok">Aktif</span>'}</td><td><button class="btn s" onclick="editPic('${p.id}')">Edit</button> <button class="btn s ${p.active===false?'p':'d'}" onclick="togglePic('${p.id}')">${p.active===false?'Aktifkan':'Nonaktifkan'}</button> <button class="btn s d" onclick="deletePic('${p.id}')">${pend==='picdel_'+p.id?'Yakin Hapus?':'Hapus'}</button></td></tr>`).join('')||'<tr><td colspan="6" class="mt">Belum ada PIC. Tambahkan PIC melalui form.</td></tr>';
- return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div><div><label>Username Login</label><input id="pic_user" placeholder="Contoh: andi" autocomplete="off"></div><div><label id="pic_pass_lbl">Password Login</label><input id="pic_pass" type="password" placeholder="Min. 6 karakter" autocomplete="new-password"></div><div><label>Hak Akses (Authority)</label><select id="pic_role"><option value="admin">Admin (Operator Gudang)</option><option value="supervisor">Supervisor (Pengawas)</option><option value="user">User (Kendali Penuh)</option></select></div></div><p class="mt" style="margin-top:6px">Isi Username + Password agar PIC bisa login sendiri. Saat edit, kosongkan Password bila tidak ingin mengubahnya. PIC yang login otomatis tercatat pada transaksi masuk/keluar dan stock opname.</p><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Username</th><th>Hak Akses</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+ const rows=(S.pics||[]).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.title||'-')}</td><td>${p.username&&p.passHash?esc(p.username):'<span class="mt">Belum ada akun</span>'}</td><td>${p.username&&p.passHash?(p.pw?`<code style="user-select:all">${picPwShown.has(p.id)?esc(p.pw):'••••••'}</code> <button class="btn s" title="Lihat / sembunyikan password" onclick="togglePicPw('${p.id}')">${picPwShown.has(p.id)?'🙈':'👁'}</button>`:'<span class="mt">Belum tersimpan (atur ulang)</span>'):'-'}</td><td>${p.username&&p.passHash?'<span class="b '+(picRole(p)==='user'?'er':picRole(p)==='supervisor'?'wa':'ok')+'">'+roleLabel(picRole(p))+'</span>':'-'}</td><td>${p.active===false?'<span class="b er">Nonaktif</span>':'<span class="b ok">Aktif</span>'}</td><td><button class="btn s" onclick="editPic('${p.id}')">Edit</button> <button class="btn s ${p.active===false?'p':'d'}" onclick="togglePic('${p.id}')">${p.active===false?'Aktifkan':'Nonaktifkan'}</button> <button class="btn s d" onclick="deletePic('${p.id}')">${pend==='picdel_'+p.id?'Yakin Hapus?':'Hapus'}</button></td></tr>`).join('')||'<tr><td colspan="7" class="mt">Belum ada PIC. Tambahkan PIC melalui form.</td></tr>';
+ return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div><div><label>Username Login</label><input id="pic_user" placeholder="Contoh: andi" autocomplete="off"></div><div><label id="pic_pass_lbl">Password Login</label><input id="pic_pass" type="password" placeholder="Min. 6 karakter" autocomplete="new-password"></div><div><label>Hak Akses (Authority)</label><select id="pic_role"><option value="admin">Admin (Operator Gudang)</option><option value="supervisor">Supervisor (Pengawas)</option><option value="user">User (Kendali Penuh)</option></select></div></div><p class="mt" style="margin-top:6px">Isi Username + Password agar PIC bisa login sendiri. Password dapat dilihat akun User pada tabel di bawah. Saat edit, kosongkan Password bila tidak ingin mengubahnya. PIC yang login otomatis tercatat pada transaksi masuk/keluar dan stock opname.</p><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Username</th><th>Password</th><th>Hak Akses</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 /** ID PIC yang sedang diedit di form (null = mode tambah). */
@@ -2828,8 +2904,8 @@ async function savePic(){
  if(cur&&cur.id===currentPicId&&role!==picRole(cur))return toast('Tidak dapat mengubah hak akses akun yang sedang Anda pakai.');
  let cred=null;
  if(uname){
-  if(pw){const salt=newSalt();cred={username:uname,salt,passHash:await hashPw(salt,pw)}}
-  else cred={username:uname,salt:cur.salt,passHash:cur.passHash};
+  if(pw){const salt=newSalt();cred={username:uname,salt,passHash:await hashPw(salt,pw),pw}}
+  else cred={username:uname,salt:cur.salt,passHash:cur.passHash,pw:cur.pw};
  }
  if(editPicId){
   const p=S.pics.find(x=>x.id===editPicId);
@@ -2837,8 +2913,8 @@ async function savePic(){
    const old=p.name;
    p.name=name;
    p.title=title;
-   if(cred){p.username=cred.username;p.salt=cred.salt;p.passHash=cred.passHash;p.role=role}
-   else{delete p.username;delete p.salt;delete p.passHash;delete p.role}
+   if(cred){p.username=cred.username;p.salt=cred.salt;p.passHash=cred.passHash;p.role=role;if(cred.pw)p.pw=cred.pw;else delete p.pw}
+   else{delete p.username;delete p.salt;delete p.passHash;delete p.role;delete p.pw}
    // Sinkronkan nama & jabatan PIC pada riwayat transaksi lama
    S.tx.forEach(t=>{if(t.pic===old){t.pic=name;t.picTitle=title;}});
   }
@@ -2850,6 +2926,14 @@ async function savePic(){
 }
 
 /** Mengaktifkan / menonaktifkan PIC. */
+/** ID PIC yang passwordnya sedang ditampilkan di tabel Master PIC (hanya User). */
+let picPwShown=new Set();
+function togglePicPw(id){
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat melihat password PIC.');
+ if(picPwShown.has(id))picPwShown.delete(id);else picPwShown.add(id);
+ render();
+}
+
 function togglePic(id){
  if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const p=(S.pics||[]).find(x=>x.id===id);
@@ -3776,7 +3860,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  try{abInit()}catch(e){}
  checkSession();
  if(currentUser){renderNav();go('dash');}
- try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
+ authUi();try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  window.__mimsDataReady=true;   // data lokal siap -> mulai sinkronisasi Firebase ([22])
  try{window.mimsFbStart&&window.mimsFbStart()}catch(e){console.error('[MIMS] Firebase:',e)}
 });
