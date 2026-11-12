@@ -265,6 +265,7 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 19 : Optimasi kecepatan sinkron Firebase: _sync dipindah ke mims_meta, onSnap digabung (debounce 300 ms), buildUpdates kedua dihapus, modulepreload SDK.
  Update 18 : Sinkronisasi Firebase Realtime Database untuk data utama (bagian [22]), tersimpan PER RECORD
              (mims/<koleksi>/k<id>). Setiap save() hanya mengirim record yang berubah; perubahan dari perangkat
              lain digabung otomatis (merge tiga arah) sehingga edit record berbeda tidak saling menimpa. Login
@@ -313,6 +314,10 @@
 <link rel="preconnect" href="https://www.gstatic.com" crossorigin>
 <link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
 <link rel="preconnect" href="https://mims-database-default-rtdb.asia-southeast1.firebasedatabase.app" crossorigin>
+<!-- Optimasi D: unduh modul Firebase lebih awal (paralel dengan pemuatan data lokal) -->
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.8.0/firebase-database.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js">
 <title>MIMS | Maintenance Inventory Management</title>
 <style>
 /* ======================================================================
@@ -4017,6 +4022,15 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   scheduleSaveBase();
   refreshStatus();
  }
+ /* Optimasi B: snapshot pertama langsung diproses; event berikutnya yang datang berdekatan
+    digabung (hanya yang terakhir diproses setelah 300 ms) sehingga parse+merge seluruh data tidak diulang-ulang. */
+ let snapTimer=null, latestSnap=null;
+ function onSnapDebounced(snap){
+  if(!ready){onSnap(snap);return}
+  latestSnap=snap;
+  clearTimeout(snapTimer);
+  snapTimer=setTimeout(()=>{const s=latestSnap;latestSnap=null;if(s)onSnap(s)},300);
+ }
  function onErr(e){
   console.error('[MIMS] Gagal membaca Firebase:',e);
   dlog('Baca data','GAGAL - '+((e&&(e.code||e.message))||e));
@@ -4057,10 +4071,12 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   if(pushing){again=true;return}
   const {updates,sent}=buildUpdates();
   if(!sent.length){lsDel(DIRTY_KEY);refreshStatus();return}
-  updates[ROOT+'/_sync']={at:fb.serverTimestamp(),by:(typeof currentUser!=='undefined'&&currentUser)||'-',device:deviceId()};
   pushing=true;refreshStatus();
   try{
    await fb.update(fb.ref(db),updates);
+   // Optimasi A: info _sync ditulis di luar node "mims" (yang didengarkan onValue) agar tidak memicu onSnap ulang.
+   // Dipisah & dibungkus catch supaya bila Rules mims_meta belum diizinkan, sinkron data utama tidak ikut gagal.
+   fb.update(fb.ref(db),{'mims_meta/_sync':{at:fb.serverTimestamp(),by:(typeof currentUser!=='undefined'&&currentUser)||'-',device:deviceId()}}).catch(()=>{});
    sent.forEach(([c,k,h])=>{if(h===undefined)base[c].delete(k);else base[c].set(k,h)});
    COLS.forEach(c=>{rewrite[c]=false});
    errMsg='';
@@ -4074,7 +4090,8 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   }
   pushing=false;
   scheduleSaveBase();
-  if(again||buildUpdates().sent.length){again=false;schedulePush(0);return}
+  // Optimasi C: tidak lagi memanggil buildUpdates() kedua kali (hash ulang seluruh record). Perubahan saat push ditangkap flag "again".
+  if(again){again=false;schedulePush(0);return}
   lsDel(DIRTY_KEY);
   refreshStatus();
  }
@@ -4141,7 +4158,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    errMsg='login anonim gagal: '+hint(e);refreshStatus();
   }                                                 // tetap lanjut: bila Rules masih terbuka, sinkronisasi tetap bisa
   fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();dlog('Koneksi RTDB',connected?'tersambung':'terputus');refreshStatus()});
-  fb.onValue(fb.ref(db,ROOT),onSnap,onErr);
+  fb.onValue(fb.ref(db,ROOT),onSnapDebounced,onErr);   // Optimasi B: event beruntun digabung
   refreshStatus();
  }
 
