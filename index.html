@@ -134,7 +134,7 @@
  localStorage  mims_autobackup_cfg : pengaturan Auto Backup
  IndexedDB     mims_autobackup_db  : handle folder tujuan Auto Backup
  localStorage  mims_fb_dirty / mims_fb_device : penanda perubahan belum terkirim & id perangkat (Firebase)
- Firebase RTDB mims/<koleksi>/k<id> : record per koleksi (items, tx, reqs, reqForms, reqArchive, opnames, pics) + mims/_sync
+ Firebase RTDB mims/<koleksi>/k<id> : record per koleksi (items, tx, reqs, reqForms, reqArchive, opnames, pics, images) + mims/_sync
  IndexedDB     mims_fb_base_v1     : hash record terakhir yang sinkron (dasar merge Firebase)
 
 ==========================================================================
@@ -263,6 +263,9 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar (dialog yang terbuka saat nama sparepart diklik di Daftar Suku Cadang);
+             Admin & Supervisor hanya melihat. Gambar diperkecil (maks 640 px, JPEG) dan disimpan di koleksi terpisah S.images
+             ({id: id barang, data: data-URL}) yang ikut tersinkron per record ke Firebase (mims/images/k<id>).
  Update 24 : Ganti Password (akun PIC, tombol di sidebar), kolom Password di Master PIC (lihat/sembunyikan, hanya User), dan Lupa Password di halaman login
              (isi username -> password tampil). Password PIC kini juga disimpan dalam bentuk teks (field pw) agar bisa ditampilkan.
  Update 23 : Tabel "Akun Online" di bagian bawah sidebar kiri: menampilkan username akun yang sedang login (titik hijau). Status online antar perangkat
@@ -379,6 +382,10 @@ header{position:fixed;inset:0 auto 0 0;width:256px;background:var(--sf);color:va
 .pw-dlg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
 .pw-card{background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:14px;padding:22px;width:100%;max-width:380px;display:flex;flex-direction:column;gap:6px;box-shadow:var(--shadow)}
 .pw-card h3{margin:0 0 4px}
+.img-card{max-width:460px}
+.item-img{width:100%;max-height:60vh;object-fit:contain;border-radius:10px;border:1px solid var(--bd);background:var(--sf2)}
+.item-img-empty{padding:42px 12px;text-align:center;border:1px dashed var(--bd);border-radius:10px;color:var(--mt);background:var(--sf2)}
+.lnk{background:none;border:0;padding:0;font:inherit;font-weight:700;color:var(--ac);cursor:pointer;text-align:left;text-decoration:underline;text-underline-offset:2px}
 .pw-err{display:none;font-size:12px;color:var(--er);background:var(--er-bg);border:1px solid var(--er);border-radius:8px;padding:8px 10px;margin-top:6px}
 .online-panel{margin-top:auto;flex-shrink:0;border:1px solid var(--bd);border-radius:8px;background:var(--sf2);overflow:hidden}
 .online-panel table{width:100%;border-collapse:collapse;font-size:12px}
@@ -786,7 +793,7 @@ function toggleTheme(){
    ========================================================================== */
 
 /* Data utama aplikasi. Struktur lengkap: lihat dokumentasi bagian 4 di atas file. */
-let S={items:[],tx:[],reqs:[],reqForms:[],reqArchive:[],opnames:[],pics:[],meta:{}};
+let S={items:[],tx:[],reqs:[],reqForms:[],reqArchive:[],opnames:[],pics:[],images:[],meta:{}};
 
 /* Sesi & navigasi */
 let currentUsername=null;   // username login yang sedang aktif (untuk tabel Akun Online)
@@ -965,6 +972,7 @@ async function load(){
     if(!Array.isArray(saved.reqArchive))saved.reqArchive=[];
     if(!Array.isArray(saved.opnames))saved.opnames=[];
     if(!Array.isArray(saved.pics))saved.pics=[];
+    if(!Array.isArray(saved.images))saved.images=[];
     if(!saved.meta||typeof saved.meta!=='object')saved.meta={};
     S=saved;
     S.items.forEach(i=>{if(i&&'price' in i)delete i.price});   // fitur harga dihapus (Update 22)
@@ -1239,7 +1247,7 @@ async function saveChangePw(){
 
 /** Menghapus sesi, mengosongkan form, menampilkan kembali overlay login. */
 function doLogout(){
- currentUser=null;currentPicId=null;currentUsername=null;picPwShown=new Set();closeChangePw();
+ currentUser=null;currentPicId=null;currentUsername=null;picPwShown=new Set();closeChangePw();closeItemDlg();
  authUi();try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  try{sessionStorage.removeItem('wh_session_v1')}catch(e){}
  $('#loginOverlay').style.display='flex';
@@ -1606,9 +1614,10 @@ function filteredInventoryItems(){
 /** Mengisi isi tabel (#tb) dan penghitung (#cnt) sesuai filter; tombol aksi disesuaikan peran. */
 function drawTable(){
  let r=filteredInventoryItems();
+ const hasImg=new Set((S.images||[]).map(x=>x.id));
  $('#tb').innerHTML=r.map(i=>{
   const notifOn=i.notify!==false;
-  return `<tr><td><b>${esc(i.sku)}</b></td><td>${esc(i.name)}${i.sup?`<small>Supplier: ${esc(i.sup)}</small>`:''}${!notifOn?`<small style="color:var(--wa)">🔕 Notifikasi & Auto-Request Nonaktif</small>`:''}</td><td>${esc(i.cat)}</td><td>${esc(i.loc)}</td><td class="r"><b>${num(i.stock)}</b> ${esc(i.unit)}${pendQty(i.id)>0?`<small>+${num(pendQty(i.id))} dalam PR</small>`:''}</td><td class="r">${num(i.min)}</td><td>${badge(i)}</td>
+  return `<tr><td><b>${esc(i.sku)}</b></td><td><button type="button" class="lnk" title="Klik untuk melihat gambar & detail" onclick="openItemDlg('${i.id}')">${esc(i.name)}</button>${hasImg.has(i.id)?' <span title="Ada gambar">📷</span>':''}${i.sup?`<small>Supplier: ${esc(i.sup)}</small>`:''}${!notifOn?`<small style="color:var(--wa)">🔕 Notifikasi & Auto-Request Nonaktif</small>`:''}</td><td>${esc(i.cat)}</td><td>${esc(i.loc)}</td><td class="r"><b>${num(i.stock)}</b> ${esc(i.unit)}${pendQty(i.id)>0?`<small>+${num(pendQty(i.id))} dalam PR</small>`:''}</td><td class="r">${num(i.min)}</td><td>${badge(i)}</td>
   <td class="c">
    <label class="chk-wrap" title="${notifOn?'Notifikasi Aktif: Masuk Peringatan Stok & Auto Input Request saat menipis/habis':'Notifikasi Nonaktif: Tidak masuk Peringatan Stok & Auto Input Request'}">
     <input type="checkbox" ${notifOn?'checked':''} onchange="toggleItemNotify('${i.id}',this.checked)">
@@ -1624,6 +1633,79 @@ function drawTable(){
   </div></td></tr>`;
  }).join('')||'<tr><td colspan="10" class="mt">Tidak ada data yang cocok dengan filter</td></tr>';
  $('#cnt').textContent=r.length+' dari '+S.items.length+' item ditampilkan';
+}
+
+/* ---------- Gambar sparepart ---------- */
+/** Hanya data-URL gambar base64 yang dirender (data dari Firebase dianggap tidak tepercaya). */
+const IMG_RE=/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
+const imgSrc=id=>{const x=(S.images||[]).find(v=>v.id===id);return x&&IMG_RE.test(String(x.data||''))?x.data:''};
+
+/** Memperkecil gambar (sisi terpanjang maks. 640 px) dan mengubahnya ke JPEG agar ringan disimpan & disinkronkan. */
+function compressImage(file,maxSide=640,q=0.72){
+ return new Promise((res,rej)=>{
+  const fr=new FileReader();
+  fr.onerror=()=>rej(new Error('File tidak dapat dibaca'));
+  fr.onload=()=>{
+   const im=new Image();
+   im.onerror=()=>rej(new Error('File bukan gambar yang valid'));
+   im.onload=()=>{
+    const k=Math.min(1,maxSide/Math.max(im.naturalWidth,im.naturalHeight));
+    const w=Math.max(1,Math.round(im.naturalWidth*k)),h=Math.max(1,Math.round(im.naturalHeight*k));
+    const c=document.createElement('canvas');c.width=w;c.height=h;
+    const g=c.getContext('2d');g.fillStyle='#fff';g.fillRect(0,0,w,h);g.drawImage(im,0,0,w,h);
+    let out=c.toDataURL('image/jpeg',q);
+    if(out.length>200000)out=c.toDataURL('image/jpeg',0.5);
+    res(out);
+   };
+   im.src=fr.result;
+  };
+  fr.readAsDataURL(file);
+ });
+}
+
+/** Dialog detail sparepart: menampilkan gambar. User juga dapat menambah/mengganti/menghapus gambar. */
+function openItemDlg(id){
+ const it=findById(id);if(!it)return;
+ closeItemDlg();
+ const src=imgSrc(id),isU=currentUser==='user';
+ const d=document.createElement('div');d.id='itemDlg';d.className='pw-dlg';
+ d.onclick=e=>{if(e.target===d)closeItemDlg()};
+ d.innerHTML=`<div class="pw-card img-card" role="dialog" aria-label="Detail Suku Cadang"><h3>${esc(it.name)}</h3>
+  <p class="mt" style="margin:0 0 8px">${esc(it.sku)} · ${esc(it.cat||'-')} · Lokasi ${esc(it.loc||'-')}</p>
+  ${src?`<img class="item-img" src="${src}" alt="Gambar ${esc(it.name)}">`:'<div class="item-img-empty">🖼️ Belum ada gambar</div>'}
+  ${isU?`<input id="itemImgFile" type="file" accept="image/*" style="display:none" onchange="pickItemImage('${id}',this)">
+  <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px"><button class="btn p" onclick="document.getElementById('itemImgFile').click()">${src?'Ganti Gambar':'Tambah Gambar'}</button>${src?`<button class="btn d" onclick="removeItemImage('${id}')">Hapus Gambar</button>`:''}</div>
+  <small class="mt">Gambar otomatis diperkecil (maks. 640 px) agar ringan.</small>`:''}
+  <div style="display:flex;justify-content:flex-end;margin-top:12px"><button class="btn" onclick="closeItemDlg()">Tutup</button></div></div>`;
+ document.body.appendChild(d);
+}
+function closeItemDlg(){const d=document.getElementById('itemDlg');if(d)d.remove()}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeItemDlg()});
+
+/** Menyimpan gambar sparepart yang dipilih. Hanya User. */
+async function pickItemImage(id,inp){
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat menambah gambar.');
+ const f=inp.files&&inp.files[0];inp.value='';
+ if(!f)return;
+ if(!/^image\//.test(f.type))return toast('File harus berupa gambar (JPG/PNG/WebP).');
+ if(f.size>15*1024*1024)return toast('Ukuran gambar terlalu besar (maks. 15 MB).');
+ try{
+  const data=await compressImage(f);
+  if(!IMG_RE.test(data))return toast('Gambar tidak dapat diproses.');
+  if(!Array.isArray(S.images))S.images=[];
+  const e=S.images.find(x=>x.id===id),at=new Date().toISOString();
+  if(e){e.data=data;e.by=actor();e.at=at}else S.images.push({id,data,by:actor(),at});
+  save();toast('Gambar tersimpan.');
+  openItemDlg(id);if(V==='list')drawTable();
+ }catch(err){toast('Gagal memproses gambar: '+((err&&err.message)||err))}
+}
+
+/** Menghapus gambar sparepart. Hanya User. */
+function removeItemImage(id){
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat menghapus gambar.');
+ S.images=(S.images||[]).filter(x=>x.id!==id);
+ save();toast('Gambar dihapus.');
+ openItemDlg(id);if(V==='list')drawTable();
 }
 
 /** Mengaktifkan/mematikan notifikasi stok menipis/habis & keikutsertaan dalam Auto Input Request. */
@@ -1648,7 +1730,7 @@ function delItem(id){
  if(currentUser!=='user')return toast('Akses ditolak! Hanya User utama yang dapat menghapus master barang.');
  const usedIn=itemUsageRef(id);
  if(usedIn)return toast('Tidak dapat dihapus: barang masih ada di '+usedIn+'. Selesaikan atau hapus dulu.');
- if(pend===id){S.items=S.items.filter(i=>i.id!==id);pend=null;save();toast('Suku cadang dihapus');drawTable()}else{pend=id;drawTable();setTimeout(()=>{if(pend===id){pend=null;if(V==='list')drawTable()}},3000)}
+ if(pend===id){S.items=S.items.filter(i=>i.id!==id);S.images=(S.images||[]).filter(x=>x.id!==id);pend=null;save();toast('Suku cadang dihapus');drawTable()}else{pend=id;drawTable();setTimeout(()=>{if(pend===id){pend=null;if(V==='list')drawTable()}},3000)}
 }
 
 /* ==========================================================================
@@ -3515,7 +3597,8 @@ function cleanImport(o){
  const reqs=objs(o.reqs).map(r=>({...r,id:sid(r.id)||uid(),itemId:sid(r.itemId),qty:toN(r.qty)}));
  const opnames=objs(o.opnames).map(x=>({...x,id:sid(x.id)||uid(),itemId:sid(x.itemId),systemQty:toN(x.systemQty),actualQty:toN(x.actualQty),diff:toN(x.diff)}));
  const pics=objs(o.pics).filter(p=>p.name).map(p=>({...p,id:sid(p.id)||uid()}));
- return {...o,items,tx,reqs,reqForms,reqArchive,opnames,pics,meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
+ const images=objs(o.images).filter(x=>sid(x.id)&&IMG_RE.test(String(x.data||''))).map(x=>({...x,id:sid(x.id),data:String(x.data)}));
+ return {...o,items,tx,reqs,reqForms,reqArchive,opnames,pics,images,meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
 }
 
 function doImport(){
@@ -3525,7 +3608,7 @@ function doImport(){
  if(isJ&&pend!=='imp'){pend='imp';toast('Import .json menggantikan SEMUA data. Klik Proses Import lagi untuk lanjut');setTimeout(()=>{pend=null},5000);return}
  pend=null;const rd=new FileReader();rd.onerror=()=>toast('Gagal membaca file');
  rd.onload=()=>{try{
-  if(isJ){const o=cleanImport(JSON.parse(rd.result));dl('cadangan-sebelum-impor-'+today()+'.json',JSON.stringify(S,null,2),'application/json');S={items:o.items,tx:o.tx,reqs:Array.isArray(o.reqs)?o.reqs:[],reqForms:Array.isArray(o.reqForms)?o.reqForms:[],reqArchive:Array.isArray(o.reqArchive)?o.reqArchive:[],opnames:Array.isArray(o.opnames)?o.opnames:[],pics:Array.isArray(o.pics)?o.pics.filter(p=>p&&p.name).map(p=>({...p,id:p.id||uid(),name:String(p.name).trim(),title:p.title||'',active:p.active!==false})):[],meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
+  if(isJ){const o=cleanImport(JSON.parse(rd.result));dl('cadangan-sebelum-impor-'+today()+'.json',JSON.stringify(S,null,2),'application/json');S={items:o.items,tx:o.tx,reqs:Array.isArray(o.reqs)?o.reqs:[],reqForms:Array.isArray(o.reqForms)?o.reqForms:[],reqArchive:Array.isArray(o.reqArchive)?o.reqArchive:[],opnames:Array.isArray(o.opnames)?o.opnames:[],images:Array.isArray(o.images)?o.images:[],pics:Array.isArray(o.pics)?o.pics.filter(p=>p&&p.name).map(p=>({...p,id:p.id||uid(),name:String(p.name).trim(),title:p.title||'',active:p.active!==false})):[],meta:o.meta&&typeof o.meta==='object'?o.meta:{}};
    // Cadangan lama (sebelum ada Master PIC): bentuk daftar PIC dari riwayat barang keluar.
    if(!S.pics.length){const old=[...new Set(S.tx.filter(t=>t.type==='out'&&t.pic).map(t=>t.pic))];S.pics=old.map((name,i)=>({id:'PIC-'+(i+1),name,title:'Jabatan belum diisi',active:true,createdBy:'migrasi'}));}
    save();toast('Cadangan dipulihkan: '+S.items.length+' barang, '+S.pics.length+' PIC');go('dash')}
@@ -3914,7 +3997,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   appId:'1:934188939152:web:60ac046279293cda616515'
  };
  const ROOT='mims';
- const COLS=['items','tx','reqs','reqForms','reqArchive','opnames','pics'];
+ const COLS=['items','tx','reqs','reqForms','reqArchive','opnames','pics','images'];
  const DESC={reqForms:true,reqArchive:true};      // koleksi yang memakai unshift (terbaru di depan)
  const NESTED=['reqForms','reqArchive'];          // record yang punya array items di dalamnya
  const SDK='https://www.gstatic.com/firebasejs/10.8.0/';
@@ -4156,7 +4239,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    backup('cadangan_firebase_',{maps:Object.fromEntries(COLS.map(c=>[c,[...P.maps[c].values()].map(x=>x.rec)]))});
    COLS.forEach(c=>{const L=localMap(c);P.maps[c].forEach((r,k)=>{if(L.has(k))base[c].set(k,r.h)})});   // lokal menang untuk record yang sama
   }else{
-   if(differs(P))backup('cadangan_sebelum_sync_',{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,meta:S.meta});
+   if(differs(P))backup('cadangan_sebelum_sync_',{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,images:S.images,meta:S.meta});
    COLS.forEach(c=>{localMap(c).forEach((v,k)=>base[c].set(k,v.h))});                                  // lokal dianggap tidak berubah -> Firebase menang
   }
  }
