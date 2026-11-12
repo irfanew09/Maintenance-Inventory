@@ -102,9 +102,8 @@
    meta:       { lastBackupAt: ISO-string waktu backup JSON terakhir }
  }
 
- items[]      { id, sku, name, cat, loc, unit, stock, min, price, sup, createdAt }
+ items[]      { id, sku, name, cat, loc, unit, stock, min, sup, createdAt }
               - sku unik; stock & min = angka (boleh desimal, dibulatkan r3()).
-              - price = sisa data lama, tidak lagi diedit di form (sejak Update 13).
  tx[]         { id, date 'YYYY-MM-DD', time 'HH:MM', item (id barang),
                 type 'in'|'out', qty, pic, picTitle, by (peran penginput), note,
                 isInit?, isAdj?, isOpname? }
@@ -147,12 +146,11 @@
 
    user        Kendali penuh: semua menu, edit/hapus barang, import, hapus arsip,
                Export/Import, Stock Opname, Master PIC, Auto Backup.
-   supervisor  Pengawas: melihat data, menambah barang BARU, mengelola Master
-               PIC. Tidak boleh input transaksi, opname, mencatat penerimaan,
-               atau menghapus transaksi/form.
+   supervisor  Pengawas: hak Admin (input masuk/keluar, request, proses request,
+               opname, transaksi terakhir) + menambah Master Barang BARU.
+               Tidak punya Master PIC, Export/Import, edit/hapus master.
    admin       Operator gudang: input masuk/keluar, request, proses request,
-               opname. Tidak punya menu Master dan Export/Import; harga
-               disembunyikan pada beberapa tampilan.
+               opname. Tidak punya menu Master dan Export/Import.
 
  Penjagaan ada di dua lapis: (1) menu disaring lewat ACCOUNTS[role].tabs dan
  go(); (2) tiap fungsi aksi mengecek currentUser sendiri dan memanggil toast
@@ -175,7 +173,7 @@
  - Keamanan HTML : semua teks dari pengguna/data yang masuk ke string HTML wajib
                    lewat esc(). Jangan menyisipkan data mentah ke innerHTML.
  - Angka         : pakai parseDec() untuk membaca input desimal, r3() untuk
-                   membulatkan 3 desimal, num() / rp() untuk menampilkan.
+                   membulatkan 3 desimal, num() untuk menampilkan.
  - Tanggal/waktu : pakai today(), wibTime(), dateOffset(), ago(). Hindari
                    new Date().toISOString() untuk tanggal lokal.
  - Penyimpanan   : jangan menulis localStorage langsung untuk data utama;
@@ -265,6 +263,15 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 22 : Fitur harga dihapus total (data items.price dibuang saat dimuat, kolom 'harga' dihapus dari CSV/template, helper rp() dihapus).
+             Halaman login: label 'Username (Akun PIC)'; blok 'Akun Uji Coba' dihapus.
+ Update 21 : Hak akses diubah. Admin = Daftar Suku Cadang, Request, Proses Request, Masuk, Keluar, Transaksi Terakhir, Stock Opname.
+             Supervisor = hak Admin + Master Barang Baru (tanpa Master PIC). User = semua fitur (termasuk Master PIC, Export/Import, edit/hapus master).
+ Update 20b: Akun PIC punya Hak Akses (User / Supervisor / Admin) yang ditentukan akun User saat membuat/mengedit PIC (field role pada Master PIC; default Admin).
+ Update 20 : Akun login per PIC. Master PIC kini punya Username + Password (disimpan sebagai hash SHA-256 + salt). PIC yang login
+             otomatis tercatat sebagai PIC pada Suku Cadang Masuk/Keluar, Stock Opname, dan Penerimaan di Proses Request
+             (kolom PIC tidak perlu diisi/dipilih lagi). Akun lama user/supervisor/admin tetap berlaku; untuk akun tanpa
+             identitas PIC (mis. admin umum) pilihan PIC manual tetap tersedia. Akun PIC memakai hak akses setara Admin (Operator Gudang).
  Update 19 : Optimasi kecepatan sinkron Firebase: _sync dipindah ke mims_meta, onSnap digabung (debounce 300 ms), buildUpdates kedua dihapus, modulepreload SDK.
  Update 18 : Sinkronisasi Firebase Realtime Database untuk data utama (bagian [22]), tersimpan PER RECORD
              (mims/<koleksi>/k<id>). Setiap save() hanya mengirim record yang berubah; perubahan dari perangkat
@@ -520,17 +527,11 @@ tr.done-row td{opacity:.65;background:var(--sf2)}
   <h2>🔐 MIMS Login Otoritas</h2>
   <p>Masukkan akun Anda untuk mengakses sistem maintenance</p>
   <form id="loginForm" style="display:flex;flex-direction:column;gap:12px">
-   <div><label for="loginUser">Username</label><input id="loginUser" name="username" placeholder="Contoh: user, supervisor, admin" autocomplete="username" required></div>
+   <div><label for="loginUser">Username (Akun PIC)</label><input id="loginUser" name="username" autocomplete="username" required></div>
    <div><label for="loginPass">Password</label><input id="loginPass" name="password" type="password" placeholder="••••••" autocomplete="current-password" required></div>
    <div id="loginErr" role="alert" aria-live="polite" style="display:none;font-size:12px;color:var(--er);background:var(--er-bg);border:1px solid var(--er);border-radius:8px;padding:8px 10px"></div>
    <button id="loginSubmit" type="submit" class="btn p" style="margin-top:8px;min-height:42px">Masuk ke Dashboard</button>
   </form>
-  <div class="role-hint">
-   <b>Akun Uji Coba:</b><br>
-   • <b>User</b> (Full Akses): <code>user</code> / <code>123</code><br>
-   • <b>Supervisor</b> (Pengawas): <code>supervisor</code> / <code>123</code><br>
-   • <b>Admin</b> (Operator): <code>admin</code> / <code>123</code>
-  </div>
  </div>
 </div>
 
@@ -602,9 +603,6 @@ const $=s=>document.querySelector(s);
 
 /** Escape karakter HTML (& < > ") agar aman disisipkan ke string HTML. WAJIB untuk semua teks dari pengguna/data. */
 const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-
-/** Format rupiah, contoh 15000 -> "Rp 15.000". */
-const rp=n=>'Rp '+Math.round(n).toLocaleString('id-ID');
 
 /** Format angka gaya Indonesia (pemisah ribuan titik), contoh 1500.5 -> "1.500,5". */
 const num=n=>Number(n||0).toLocaleString('id-ID');
@@ -804,7 +802,7 @@ const skuCollator=new Intl.Collator('id',{numeric:true,sensitivity:'base'});
  */
 const ACCOUNTS={
  user:{name:'User (Kendali Penuh)',role:'user',tabs:['dash','list','req','proc','masters','master','in','out','tx','opname','data','pic']},
- supervisor:{name:'Supervisor (Pengawas)',role:'supervisor',tabs:['dash','list','req','proc','masters','master','tx','pic']},
+ supervisor:{name:'Supervisor (Pengawas)',role:'supervisor',tabs:['dash','list','req','proc','in','out','tx','opname','masters','master']},
  admin:{name:'Admin (Operator Gudang)',role:'admin',tabs:['dash','list','req','proc','in','out','tx','opname']}
 };
 
@@ -837,20 +835,20 @@ const TABS=[
 /** Mengisi S dengan data contoh (12 barang, transaksi 7 hari, 1 Form PR) saat belum ada data. Hapus/ubah di sini untuk memulai dengan data kosong. */
 function seed(){
  const L=[
-  ['MEK-001','Bearing 6205 ZZ','Mekanikal','A-01','pcs',48,20,45000,'PT Sinar Bearing'],
-  ['MEK-002','V-Belt B-52','Mekanikal','A-02','pcs',12,15,85000,'CV Teknik Jaya'],
-  ['MEK-003','Seal Hidrolik 50mm','Mekanikal','A-03','pcs',30,10,65000,'PT Hidrolik Indo'],
-  ['ELK-001','Kontaktor 25A','Elektrikal','B-01','unit',9,4,420000,'PT Elektro Mandiri'],
-  ['ELK-002','Sensor Proximity M18','Elektrikal','B-02','unit',3,4,275000,'PT Otomasi Nusantara'],
-  ['ELK-003','Sekring 10A','Elektrikal','B-03','pcs',0,30,8000,'CV Elektrikal'],
-  ['PLM-001','Oli Hidrolik ISO 46','Pelumas','C-01','liter',160,60,38000,'PT Pelumas Utama'],
-  ['PLM-002','Grease EP2','Pelumas','C-02','kg',22,10,85000,'PT Pelumas Utama'],
-  ['FLT-001','Filter Oli','Filter','D-01','pcs',18,8,95000,'CV Filterindo'],
-  ['FLT-002','Filter Udara Kompresor','Filter','D-02','pcs',5,6,130000,'CV Filterindo'],
-  ['CON-001','Kain Majun (Lap)','Consumable','E-01','kg',40,15,22000,'UD Maju Bersama'],
-  ['APD-001','Sarung Tangan Safety','APD','E-02','pasang',60,25,12000,'PT Safety Pratama']
+  ['MEK-001','Bearing 6205 ZZ','Mekanikal','A-01','pcs',48,20,'PT Sinar Bearing'],
+  ['MEK-002','V-Belt B-52','Mekanikal','A-02','pcs',12,15,'CV Teknik Jaya'],
+  ['MEK-003','Seal Hidrolik 50mm','Mekanikal','A-03','pcs',30,10,'PT Hidrolik Indo'],
+  ['ELK-001','Kontaktor 25A','Elektrikal','B-01','unit',9,4,'PT Elektro Mandiri'],
+  ['ELK-002','Sensor Proximity M18','Elektrikal','B-02','unit',3,4,'PT Otomasi Nusantara'],
+  ['ELK-003','Sekring 10A','Elektrikal','B-03','pcs',0,30,'CV Elektrikal'],
+  ['PLM-001','Oli Hidrolik ISO 46','Pelumas','C-01','liter',160,60,'PT Pelumas Utama'],
+  ['PLM-002','Grease EP2','Pelumas','C-02','kg',22,10,'PT Pelumas Utama'],
+  ['FLT-001','Filter Oli','Filter','D-01','pcs',18,8,'CV Filterindo'],
+  ['FLT-002','Filter Udara Kompresor','Filter','D-02','pcs',5,6,'CV Filterindo'],
+  ['CON-001','Kain Majun (Lap)','Consumable','E-01','kg',40,15,'UD Maju Bersama'],
+  ['APD-001','Sarung Tangan Safety','APD','E-02','pasang',60,25,'PT Safety Pratama']
  ];
- S.items=L.map(a=>({id:uid(),sku:a[0],name:a[1],cat:a[2],loc:a[3],unit:a[4],stock:a[5],min:a[6],price:a[7],sup:a[8]||''}));
+ S.items=L.map(a=>({id:uid(),sku:a[0],name:a[1],cat:a[2],loc:a[3],unit:a[4],stock:a[5],min:a[6],sup:a[7]||''}));
  S.tx=[];
  S.reqs=[];
  S.reqForms=[];
@@ -944,6 +942,7 @@ async function load(){
     if(!Array.isArray(saved.pics))saved.pics=[];
     if(!saved.meta||typeof saved.meta!=='object')saved.meta={};
     S=saved;
+    S.items.forEach(i=>{if(i&&'price' in i)delete i.price});   // fitur harga dihapus (Update 22)
     if(!S.pics.length){const old=[...new Set((S.tx||[]).filter(t=>t.type==='out'&&t.pic).map(t=>t.pic))];S.pics=old.map((name,i)=>({id:'PIC-'+(i+1),name,title:'Jabatan belum diisi',active:true,createdBy:'migrasi'}));}
     dataVer++;
     if(fromLegacy){
@@ -1027,7 +1026,40 @@ const nm=id=>{const i=findById(id);return i?i.name:'(dihapus)'};
 const unitOf=id=>{const i=findById(id);return i?i.unit:''};
 
 /** Nama peran penginput saat ini ("User" | "Supervisor" | "Admin") untuk kolom pic/catatan otomatis. */
-const actor=()=>({user:'User',supervisor:'Supervisor',admin:'Admin'})[currentUser]||'-';
+const actor=()=>{const cp=curPic();return cp?cp.name:({user:'User',supervisor:'Supervisor',admin:'Admin'})[currentUser]||'-'};
+
+/** Peran akun PIC: 'user' | 'supervisor' | 'admin' (default admin bila belum diatur). */
+const picRole=p=>(p&&Object.hasOwn(ACCOUNTS,p.role))?p.role:'admin';
+const roleLabel=r=>({user:'User',supervisor:'Supervisor',admin:'Admin'})[r]||'Admin';
+
+/** ID PIC yang sedang login (null bila login memakai akun umum user/supervisor/admin). */
+let currentPicId=null;
+/** Data PIC aktif yang sedang login, atau null. PIC nonaktif/terhapus dianggap tidak login sebagai PIC. */
+const curPic=()=>currentPicId?((S.pics||[]).find(p=>p.id===currentPicId&&p.active!==false)||null):null;
+
+/** Hash kata sandi PIC: SHA-256(salt + ':' + sandi). Cadangan sederhana bila crypto.subtle tidak tersedia. */
+async function hashPw(salt,pw){
+ const txt=salt+':'+pw;
+ try{
+  if(window.crypto&&crypto.subtle){
+   const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(txt));
+   return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('');
+  }
+ }catch(e){}
+ let h1=0x811c9dc5,h2=5381;
+ for(let i=0;i<txt.length;i++){const c=txt.charCodeAt(i);h1^=c;h1=Math.imul(h1,16777619)>>>0;h2=(Math.imul(h2,33)^c)>>>0}
+ return 'f'+h1.toString(16).padStart(8,'0')+h2.toString(16).padStart(8,'0');
+}
+const newSalt=()=>Array.from({length:16},()=>Math.floor(Math.random()*256).toString(16).padStart(2,'0')).join('');
+
+/** Isian PIC pada form transaksi: PIC login -> tampil otomatis (terkunci); akun umum -> pilihan manual dari Master PIC. */
+function picFieldHtml(id){
+ const cp=curPic();
+ if(cp)return `<input id="${id}" value="${esc(cp.name)}" readonly style="background:var(--sf2);cursor:not-allowed"><small class="mt">Otomatis sesuai akun yang login${cp.title?' ('+esc(cp.title)+')':''}.</small>`;
+ return `<select id="${id}"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Akun ini tidak terhubung ke PIC, pilih PIC dari Master PIC.</small>`;
+}
+/** Nilai PIC untuk disimpan: PIC login -> namanya; akun umum -> isi pilihan manual. */
+const picValue=id=>{const cp=curPic();return cp?cp.name:($('#'+id)?.value||'').trim()};
 
 /** Total jumlah barang yang sudah ada di Form PR berjalan namun belum diterima. */
 /** Cache hitungan turunan: dihitung ulang hanya bila data (dataVer) atau kuncinya berubah. */
@@ -1076,28 +1108,38 @@ function itemUsageRef(id){
  * Memvalidasi username/kata sandi, mengatur currentUser, menyimpan sesi, merender menu & halaman, menyembunyikan overlay.
  * Bila render gagal: sesi dibatalkan dan pesan error ditampilkan di form login.
  */
-function doLogin(){
+async function doLogin(){
  const userEl=$('#loginUser'),passEl=$('#loginPass'),err=$('#loginErr');
  const u=(userEl?.value||'').trim().toLowerCase();
  const p=(passEl?.value||'').trim();
- if(!Object.hasOwn(ACCOUNTS,u)||p!=='123'){
-  if(err){err.textContent='Username atau password salah. Untuk akun uji coba, gunakan user / 123.';err.style.display='block'}
-  passEl?.focus();return false;
+ const showErr=m=>{if(err){err.textContent=m;err.style.display='block'}passEl?.focus();return false};
+ let role=null,picId=null,label='',sess='';
+ if(Object.hasOwn(ACCOUNTS,u)){
+  if(p!=='123')return showErr('Username atau password salah.');
+  role=u;label=ACCOUNTS[u].name;sess=u;
+ }else{
+  // Akun PIC: username + password dari Master PIC
+  const pic=(S.pics||[]).find(x=>x.username&&String(x.username).toLowerCase()===u);
+  if(!pic||!pic.passHash||!pic.salt)return showErr('Username atau password salah.');
+  if(pic.active===false)return showErr('Akun PIC ini nonaktif. Hubungi User/Supervisor.');
+  const h=await hashPw(pic.salt,p);
+  if(h!==pic.passHash)return showErr('Username atau password salah.');
+  role=picRole(pic);picId=pic.id;label='PIC: '+pic.name+(pic.title?' ('+pic.title+')':'')+' · '+roleLabel(role);sess='pic:'+pic.id;
  }
  if(err)err.style.display='none';
- currentUser=u;
- try{sessionStorage.setItem('wh_session_v1',u)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
- const acc=ACCOUNTS[u];
+ currentUser=role;currentPicId=picId;
+ try{sessionStorage.setItem('wh_session_v1',sess)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
+ const acc=ACCOUNTS[role];
  if(!acc.tabs.includes(V))V='dash';
  try{
-  $('#currentUserBadge').innerHTML=`<span>👤 ${acc.name}</span>`;
+  $('#currentUserBadge').innerHTML=`<span>👤 ${esc(label)}</span>`;
   renderNav();
   render();
   $('#loginOverlay').style.display='none';
-  toast('Berhasil masuk sebagai '+acc.name);
+  toast('Berhasil masuk sebagai '+label);
   return true;
  }catch(e){
-  currentUser=null;
+  currentUser=null;currentPicId=null;
   try{sessionStorage.removeItem('wh_session_v1')}catch(ignore){}
   $('#loginOverlay').style.display='flex';
   if(err){err.textContent='Login diterima, tetapi dashboard gagal dibuka: '+String(e?.message||e);err.style.display='block'}
@@ -1108,7 +1150,7 @@ function doLogin(){
 
 /** Menghapus sesi, mengosongkan form, menampilkan kembali overlay login. */
 function doLogout(){
- currentUser=null;
+ currentUser=null;currentPicId=null;
  try{sessionStorage.removeItem('wh_session_v1')}catch(e){}
  $('#loginOverlay').style.display='flex';
  $('#loginUser').value='';
@@ -1120,11 +1162,20 @@ function checkSession(){
  try{
   const saved=sessionStorage.getItem('wh_session_v1');
   if(saved&&Object.hasOwn(ACCOUNTS,saved)){
-   currentUser=saved;
+   currentUser=saved;currentPicId=null;
    $('#loginOverlay').style.display='none';
    const acc=ACCOUNTS[saved];
    $('#currentUserBadge').innerHTML=`<span>👤 ${acc.name}</span>`;
    return;
+  }
+  if(saved&&saved.startsWith('pic:')){
+   const pic=(S.pics||[]).find(x=>x.id===saved.slice(4)&&x.username&&x.passHash&&x.active!==false);
+   if(pic){
+    currentUser=picRole(pic);currentPicId=pic.id;
+    $('#loginOverlay').style.display='none';
+    $('#currentUserBadge').innerHTML=`<span>👤 ${esc('PIC: '+pic.name+(pic.title?' ('+pic.title+')':'')+' · '+roleLabel(picRole(pic)))}</span>`;
+    return;
+   }
   }
  }catch(e){}
  $('#loginOverlay').style.display='flex';
@@ -1407,7 +1458,7 @@ function vDash(){
  const rec=[...S.tx].reverse().slice(0,7).map(t=>`<div class="row"><span>${esc(nm(t.item))}<small class="mt">${esc(t.date)}${t.time?' · '+esc(t.time)+' WIB':''}${t.pic?' · 👤 '+esc(t.pic):''}${t.note?' · '+esc(t.note):''}</small></span><b style="color:var(--${t.type==='in'?'ok':'er'})">${t.type==='in'?'+':'−'}${num(t.qty)} ${esc(unitOf(t.item))}</b></div>`).join('')||'<div class="mt">Belum ada transaksi</div>';
  const kp=(l,v,s,act)=>`<div class="card kp" onclick="${act}" title="Klik untuk melihat detail"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
  
- return `<div class="page-head"><div><h2>Dashboard Maintenance</h2><p class="page-subtitle">Ringkasan kondisi persediaan dan aktivitas spare part (Peran: <b>${ACCOUNTS[currentUser].name}</b>)</p></div><div class="page-actions"><button class="btn" onclick="go('req')">🛒 Request (${(S.reqs||[]).length})</button><button class="btn" onclick="go('proc')">⏳ Proses Request (${(S.reqForms||[]).length})</button>${currentUser!=='supervisor'?`<button class="btn p" onclick="go('in')">＋ Barang Masuk</button><button class="btn d" onclick="go('out')">－ Barang Keluar</button>`:''}</div></div>
+ return `<div class="page-head"><div><h2>Dashboard Maintenance</h2><p class="page-subtitle">Ringkasan kondisi persediaan dan aktivitas spare part (Peran: <b>${ACCOUNTS[currentUser].name}</b>)</p></div><div class="page-actions"><button class="btn" onclick="go('req')">🛒 Request (${(S.reqs||[]).length})</button><button class="btn" onclick="go('proc')">⏳ Proses Request (${(S.reqForms||[]).length})</button><button class="btn p" onclick="go('in')">＋ Barang Masuk</button><button class="btn d" onclick="go('out')">－ Barang Keluar</button></div></div>
  <div class="grid k">
   ${kp('Jenis Suku Cadang',num(it.length),cats().length+' kategori · '+locs+' zona',"filterFromDash('')")}
   ${kp('Total Stok Fisik',num(tot),'unit di semua lokasi',"filterFromDash('')")}
@@ -1442,7 +1493,7 @@ function vDash(){
 
 /** Kerangka halaman: judul, toolbar pencarian/filter/urutan, legenda status, dan tabel kosong yang diisi drawTable(). */
 function vList(){
- return `<div class="page-head"><div><h2>Daftar Suku Cadang (Inventory)</h2><p class="page-subtitle">Kelola master data, pantau saldo, atur ceklis notifikasi stok kritis/auto-request, dan lakukan transaksi cepat.</p></div><div class="page-actions"><button class="btn" onclick="openExportDialog()">🖨️ Export Laporan (PDF)</button>${currentUser==='user'?`<button class="btn p" onclick="go('master')">+ Master Spare Part Baru</button>`:''}</div></div>
+ return `<div class="page-head"><div><h2>Daftar Suku Cadang (Inventory)</h2><p class="page-subtitle">Kelola master data, pantau saldo, atur ceklis notifikasi stok kritis/auto-request, dan lakukan transaksi cepat.</p></div><div class="page-actions"><button class="btn" onclick="openExportDialog()">🖨️ Export Laporan (PDF)</button>${['user','supervisor'].includes(currentUser)?`<button class="btn p" onclick="go('master')">+ Master Spare Part Baru</button>`:''}</div></div>
  <div class="inventory-toolbar">
   <div class="search-wrap"><input id="q" placeholder="Cari kode, nama, lokasi, atau supplier…" value="${esc(F.q)}" oninput="F.q=this.value;drawTable()"></div>
   <select aria-label="Filter kategori" onchange="F.cat=this.value;drawTable()"><option value="">Semua kategori</option>${cats().map(c=>`<option ${F.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
@@ -1476,8 +1527,8 @@ function drawTable(){
   </td>
   <td><div class="act-group">
    <button class="btn s p" title="Pesan / Request Sparepart" onclick="quickReq('${i.id}')">🛒 Pesan</button>
-   ${currentUser!=='supervisor'?`<button class="btn s ok" title="Catat Barang Masuk" onclick="quickTx('${i.id}','in')">＋ Masuk</button>
-   <button class="btn s d" title="Catat Barang Keluar" onclick="quickTx('${i.id}','out')" ${i.stock<=0?'disabled style="opacity:.4;cursor:not-allowed"':''}>－ Keluar</button>`:''}
+   <button class="btn s ok" title="Catat Barang Masuk" onclick="quickTx('${i.id}','in')">＋ Masuk</button>
+   <button class="btn s d" title="Catat Barang Keluar" onclick="quickTx('${i.id}','out')" ${i.stock<=0?'disabled style="opacity:.4;cursor:not-allowed"':''}>－ Keluar</button>
    ${currentUser==='user'?`<button class="btn s" onclick="edit('${i.id}')">Edit</button>
    <button class="btn s d" onclick="delItem('${i.id}')">${pend===i.id?'Yakin?':'Hapus'}</button>`:''}
   </div></td></tr>`;
@@ -1568,12 +1619,11 @@ function nextCode(c){
  */
 function saveItem(){
  if(currentUser!=='user'&&!(currentUser==='supervisor'&&!editId))return toast('Akses ditolak! Supervisor hanya dapat menambahkan master barang baru, bukan mengubah barang yang sudah ada.');
- // Field harga sudah dihapus dari form Update 13; pembacaan field dibuat aman.
  const g=id=>{const el=$('#f_'+id);return el?el.value.trim():''};
  const oldItem=editId?S.items.find(x=>x.id===editId):null;
  const notifyEl=$('#f_notify');
  const notifyVal=notifyEl?Boolean(notifyEl.checked):(oldItem?oldItem.notify!==false:true);
- const o={sku:g('sku'),name:g('name'),cat:catVal(),loc:g('loc'),unit:g('unit')||'pcs',stock:Math.max(0,parseDec(g('stock'))),min:Math.max(0,parseDec(g('min'))),price:oldItem?(Number(oldItem.price)||0):0,sup:g('sup'),notify:notifyVal};
+ const o={sku:g('sku'),name:g('name'),cat:catVal(),loc:g('loc'),unit:g('unit')||'pcs',stock:Math.max(0,parseDec(g('stock'))),min:Math.max(0,parseDec(g('min'))),sup:g('sup'),notify:notifyVal};
  if(!o.sku||!o.name||!o.cat)return toast('Pilih kategori dan isi nama suku cadang');
  if(S.items.some(i=>i.sku===o.sku&&i.id!==editId))return toast('Kode sudah dipakai oleh barang lain');
  if(editId){
@@ -1688,19 +1738,18 @@ function expPDF(ty){
 
 /** Tampilan form + riwayat untuk barang masuk/keluar. Supervisor mendapat pesan "Akses Dibatasi". */
 function vTx(ty){
- if(currentUser==='supervisor')return `<div class="card" style="padding:24px;text-align:center"><h3 style="color:var(--er)">Akses Dibatasi</h3><p class="mt">Akun Supervisor tidak diizinkan menginput transaksi barang masuk atau keluar.</p><button class="btn p" onclick="go('dash')">Kembali ke Dashboard</button></div>`;
  const hAll=hist(ty);
  const rows=hAll.slice(0,LIM[ty]).map(t=>{
   const i=findById(t.item)||{};
   return `<tr><td>${esc(t.date)}<small>${t.time?esc(t.time)+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b> · ${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Terima':'Pakai'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td><button class="btn s d" onclick="delTx('${t.id}',()=>drawHist('${ty}'))">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button></td></tr>`;
  }).join('')||'<tr><td colspan="7" class="mt">Belum ada transaksi</td></tr>';
  const moreRow=hAll.length>LIM[ty]?`<tr><td colspan="7" class="c"><button class="btn s" onclick="LIM['${ty}']+=100;drawHist('${ty}')">Tampilkan 100 lagi (${LIM[ty]} dari ${hAll.length})</button></td></tr>`:'';
- return `<div class="page-head"><div><h2>${ty==='in'?'➕ Suku Cadang Masuk (Restock)':'➖ Suku Cadang Keluar (Pemakaian)'}</h2><p class="page-subtitle">${ty==='in'?'Tambahkan beberapa sparepart ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk menambah stok.':'Tambahkan beberapa sparepart beserta PIC ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk mengurangi stok.'}</p></div>${ty==='in'?`<div class="page-actions"><button class="btn" onclick="go('proc')">⏳ Cek Penerimaan dari Proses Request</button>${currentUser==='user'?'<button class="btn" onclick="go(\'master\')">+ Buat Master Baru</button>':''}</div>`:''}</div>
+ return `<div class="page-head"><div><h2>${ty==='in'?'➕ Suku Cadang Masuk (Restock)':'➖ Suku Cadang Keluar (Pemakaian)'}</h2><p class="page-subtitle">${ty==='in'?'Tambahkan beberapa sparepart ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk menambah stok.':'Tambahkan beberapa sparepart beserta PIC ke daftar pemeriksaan, periksa kembali, lalu konfirmasi untuk mengurangi stok.'}</p></div>${ty==='in'?`<div class="page-actions"><button class="btn" onclick="go('proc')">⏳ Cek Penerimaan dari Proses Request</button>${['user','supervisor'].includes(currentUser)?'<button class="btn" onclick="go(\'master\')">+ Buat Master Baru</button>':''}</div>`:''}</div>
  <div class="card"><div class="fm">
   <div><label>Suku Cadang (ketik nama atau kode) *</label><input id="t_item" list="tl" placeholder="mis. bearing atau MEK-001" autocomplete="off" oninput="txInfo()"><datalist id="tl">${S.items.map(i=>`<option value="${esc(i.sku)} · ${esc(i.name)}">Stok: ${num(i.stock)} ${esc(i.unit)} (${stat(i)[0]})</option>`).join('')}</datalist><div id="t_info" class="mt" style="font-size:12px;margin-top:4px"></div></div>
   <input id="t_type" type="hidden" value="${ty}">
   <div><label>Jumlah *</label><input id="t_qty" type="text" inputmode="decimal" oninput="cleanDec(this)" placeholder="Ketik jumlah…"></div>
-  <div><label>${ty==='out'?'PIC Pengambilan Barang *':'PIC Penerima Barang *'}</label>${`<select id="t_pic"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Admin hanya dapat memilih PIC yang telah didaftarkan User/Supervisor.</small>`}</div>
+  <div><label>${ty==='out'?'PIC Pengambilan Barang':'PIC Penerima Barang'}${curPic()?'':' *'}</label>${picFieldHtml('t_pic')}</div>
   <div><label>Catatan (No. PO / Work Order / Mesin)</label><input id="t_note" placeholder="${ty==='in'?'Contoh: PO-2026-089 dari Supplier':'Contoh: WO-104 Perbaikan Mesin Welding Line 2'}"></div>
   <div><label>Tanggal (WIB)</label><input id="t_date" type="date" value="${today()}"></div>
   <div><label>Waktu (WIB)</label><input id="t_time" type="time" value="${wibTime()}"></div>
@@ -1757,11 +1806,10 @@ function txQueueHtml(ty){
 
 /** Tambahkan satu baris transaksi ke daftar pemeriksaan, tanpa mengubah stok. */
 function addTxToQueue(){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor tidak dapat menginput transaksi.');
  const type=$('#t_type').value;
  if(type!=='in'&&type!=='out')return toast('Jenis transaksi tidak valid.');
  const it=findItem($('#t_item').value),q=r3(parseDec($('#t_qty').value));
- const pic=($('#t_pic')?.value||'').trim();
+ const pic=picValue('t_pic');
  if(!it)return toast('Suku cadang tidak ditemukan, pilih dari daftar yang muncul.');
  if(!(q>0))return toast('Isi jumlah lebih dari 0.');
  if(!pic)return toast(type==='out'?'Pilih PIC Pengambilan Barang dari daftar.':'Pilih PIC Penerima Barang dari daftar.');
@@ -1805,7 +1853,6 @@ function drawTxQueue(ty){
  * Jika satu baris tidak valid, tidak ada stok atau riwayat yang diubah.
  */
 function commitTxQueue(ty){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor tidak dapat menginput transaksi.');
  const q=TXQ[ty]||[];
  if(!q.length)return toast('Daftar pemeriksaan masih kosong.');
  const totals={};
@@ -1842,7 +1889,6 @@ function commitTxQueue(ty){
  * @param rerenderFn fungsi untuk menggambar ulang halaman pemanggil.
  */
 function delTx(txId,rerenderFn){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor tidak dapat menghapus riwayat transaksi.');
  const lk=prLinkOfTx(txId);
  if(lk)return toast('Transaksi ini berasal dari Form '+lk+'. Batalkan lewat ceklis penerimaan di menu Proses Request.');
  if(pend!=='tx_'+txId){
@@ -1896,7 +1942,7 @@ function vRecent(){
  });
  const rows=all.slice(0,LIM.rec).map(t=>{
   const i=findById(t.item)||{};
-  return `<tr><td>${esc(t.date)}<small>${t.time?esc(t.time)+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b></td><td>${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Masuk':'Keluar'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td>${currentUser!=='supervisor'?`<button class="btn s d" onclick="delTx('${t.id}',render)">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button>`:'<small class="mt">Hanya Lihat</small>'}</td></tr>`;
+  return `<tr><td>${esc(t.date)}<small>${t.time?esc(t.time)+' WIB':'-'}</small></td><td><b>${esc(i.sku||'-')}</b></td><td>${esc(nm(t.item))}</td><td><span class="b ${t.type==='in'?'ok':'er'}">${t.type==='in'?'Masuk':'Keluar'}</span></td><td class="r"><b>${num(t.qty)}</b> ${esc(i.unit||'')}</td><td><b>${esc(t.pic||'-')}</b>${t.picTitle?`<small>${esc(t.picTitle)}</small>`:''}${t.by?`<small>Input: ${esc(t.by)}</small>`:''}</td><td>${esc(t.note||'-')}</td><td><button class="btn s d" onclick="delTx('${t.id}',render)">${pend==='tx_'+t.id?'Yakin Batal?':'Batal'}</button></td></tr>`;
  }).join('')||'<tr><td colspan="8" class="mt">Tidak ada transaksi yang cocok</td></tr>';
  const moreRow=all.length>LIM.rec?`<tr><td colspan="8" class="c"><button class="btn s" onclick="LIM.rec+=100;drawRecentBody()">Tampilkan 100 lagi (${LIM.rec} dari ${all.length})</button></td></tr>`:'';
  return `<div class="page-head"><div><h2>Transaksi Terakhir</h2><p class="page-subtitle">Pantau seluruh histori penerimaan, pemakaian, PIC pengambil, dan batalkan transaksi jika salah input.</p></div><div class="page-actions"><button class="btn" onclick="expCSV('tx')">📥 Export Transaksi (.csv)</button></div></div>
@@ -2471,11 +2517,11 @@ function vProc(){
     <td>${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:''}</td>
     <td class="r">${num(curStock)} ${esc(it.unit)}</td>
     <td class="r"><b>${num(it.qty)}</b> ${esc(it.unit)}</td>
-    <td class="r"><input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(it.received?(it.recvQty??it.qty):it.qty)}" ${it.received||currentUser==='supervisor'?'disabled':''} oninput="cleanDec(this)" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}${it.received&&Number(it.recvQty??it.qty)!==Number(it.qty)?`<small>dipesan ${num(it.qty)}</small>`:''}</td>
+    <td class="r"><input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(it.received?(it.recvQty??it.qty):it.qty)}" ${it.received?'disabled':''} oninput="cleanDec(this)" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}${it.received&&Number(it.recvQty??it.qty)!==Number(it.qty)?`<small>dipesan ${num(it.qty)}</small>`:''}</td>
     <td>${it.received?`<span class="b ok">✓ Sudah Diterima (${esc(it.receivedDate||'')}${it.receivedTime?' '+esc(it.receivedTime):''})</span>`:`<span class="b wa">⏳ Belum Diterima</span>`}</td>
     <td class="c">
      <label class="chk-wrap" title="${it.received?'Klik untuk membatalkan penerimaan':'Centang jika barang sudah diterima di gudang'}">
-      <input type="checkbox" ${it.received?'checked':''} ${currentUser==='supervisor'?'disabled':''} onchange="toggleReceiveReqItem('${f.id}','${it.id}',this.checked)">
+      <input type="checkbox" ${it.received?'checked':''} onchange="toggleReceiveReqItem('${f.id}','${it.id}',this.checked)">
       <span>${it.received?'Diterima':'Terima'}</span>
      </label>
     </td>
@@ -2497,7 +2543,7 @@ function vProc(){
       <small class="mt" style="font-weight:600">${pct}%</small>
      </div>
      <button class="btn s" onclick="printReqFormById('${f.id}',event)" title="Cetak Ulang PDF Form Request">🖨️ PDF</button>
-     ${currentUser!=='supervisor'?`<button class="btn s d" onclick="delReqForm('${f.id}',event)" title="Hapus Form Request">${pend==='prf_'+f.id?'Yakin?':'Hapus'}</button>`:''}
+     <button class="btn s d" onclick="delReqForm('${f.id}',event)" title="Hapus Form Request">${pend==='prf_'+f.id?'Yakin?':'Hapus'}</button>
      <span style="font-size:14px;color:var(--mt);padding:0 4px">${isOpen?'▲':'▼'}</span>
     </div>
    </div>
@@ -2506,7 +2552,7 @@ function vProc(){
      <div style="font-size:13px"><b>Daftar Sparepart dalam Form ${esc(f.docNo)}:</b> Isi jumlah aktual yang datang (jika berbeda dari pesanan), lalu centang kolom di kanan.</div>
      <div style="display:flex;align-items:center;gap:8px">
       <label style="margin:0;font-size:12px">👤 PIC Penerima:</label>
-      <input list="pic_dl" placeholder="Nama penerima (opsional)" value="${esc(rcvPic)}" oninput="rcvPic=this.value" style="width:190px;padding:5px 9px;background:var(--sf)">
+      ${curPic()?`<input value="${esc(curPic().name)}" readonly title="Otomatis sesuai akun yang login" style="width:190px;padding:5px 9px;background:var(--sf2);cursor:not-allowed">`:`<input list="pic_dl" placeholder="Nama penerima (opsional)" value="${esc(rcvPic)}" oninput="rcvPic=this.value" style="width:190px;padding:5px 9px;background:var(--sf)">`}
      </div>
     </div>
     <div class="tw" style="background:var(--sf);border:1px solid var(--bd)">
@@ -2579,7 +2625,6 @@ function archSearch(v){
  * @param formId id Form PR, rowId id baris, isChecked status ceklis baru.
  */
 function toggleReceiveReqItem(formId,rowId,isChecked){
- if(currentUser==='supervisor'){toast('Akses ditolak! Supervisor tidak dapat mencatat penerimaan barang.');render();return}
  const f=(S.reqForms||[]).find(x=>x.id===formId);
  if(!f)return;
  const row=(f.items||[]).find(x=>x.id===rowId);
@@ -2593,7 +2638,7 @@ function toggleReceiveReqItem(formId,rowId,isChecked){
   const inp=document.getElementById('rq_'+rowId);
   const qty=r3(inp?parseDec(inp.value):(Number(row.qty)||0));
   if(!(qty>0)){toast('Isi jumlah yang diterima (lebih dari 0)');render();return}
-  const picName=rcvPic.trim()||'Admin Gudang';
+  const picName=curPic()?curPic().name:(rcvPic.trim()||'Admin Gudang');
   row.received=true;
   row.receivedDate=today();
   row.receivedTime=wibTime();
@@ -2661,7 +2706,6 @@ function toggleReceiveReqItem(formId,rowId,isChecked){
 /** Menghapus Form PR berjalan dengan konfirmasi dua klik. Bukan untuk supervisor. */
 function delReqForm(formId,ev){
  if(ev)ev.stopPropagation();
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor tidak dapat menghapus form request.');
  if(pend!=='prf_'+formId){
   pend='prf_'+formId;
   render();
@@ -2712,14 +2756,14 @@ function delArchForm(formId,ev){
 /** Halaman hub menu Master (kartu menuju Master PIC dan Master Barang Baru). */
 function vMastersHome(){
  if(!['user','supervisor'].includes(currentUser))return `<div class="card">Akses Master hanya untuk User dan Supervisor.</div>`;
- return `<div class="page-head"><div><h2>📁 Master</h2><p class="page-subtitle">Pilih data master yang ingin dikelola.</p></div></div><div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px"><button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('pic')"><h3>👥 Master PIC</h3><p class="mt">Kelola nama dan jabatan PIC untuk transaksi barang keluar.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master PIC →</span></button><button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('master')"><h3>🆕 Master Barang Baru</h3><p class="mt">Tambah data master sparepart atau barang baru.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master Barang Baru →</span></button></div>`;
+ return `<div class="page-head"><div><h2>📁 Master</h2><p class="page-subtitle">Pilih data master yang ingin dikelola.</p></div></div><div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">${currentUser==='user'?`<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('pic')"><h3>👥 Master PIC</h3><p class="mt">Kelola akun, jabatan, dan hak akses PIC.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master PIC →</span></button>`:''}<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('master')"><h3>🆕 Master Barang Baru</h3><p class="mt">Tambah data master sparepart atau barang baru.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master Barang Baru →</span></button></div>`;
 }
 
 /** Tampilan Master PIC: form tambah/edit dan tabel daftar PIC. */
 function vPicMaster(){
- if(!['user','supervisor'].includes(currentUser))return `<div class="card">Akses Master PIC hanya untuk User dan Supervisor.</div>`;
- const rows=(S.pics||[]).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.title||'-')}</td><td>${p.active===false?'<span class="b er">Nonaktif</span>':'<span class="b ok">Aktif</span>'}</td><td><button class="btn s" onclick="editPic('${p.id}')">Edit</button> <button class="btn s ${p.active===false?'p':'d'}" onclick="togglePic('${p.id}')">${p.active===false?'Aktifkan':'Nonaktifkan'}</button> <button class="btn s d" onclick="deletePic('${p.id}')">${pend==='picdel_'+p.id?'Yakin Hapus?':'Hapus'}</button></td></tr>`).join('')||'<tr><td colspan="4" class="mt">Belum ada PIC. Tambahkan PIC melalui form.</td></tr>';
- return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div></div><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User dan Supervisor. Admin hanya melihat daftar pilihan pada transaksi barang keluar.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+ if(currentUser!=='user')return `<div class="card">Akses Master PIC hanya untuk User.</div>`;
+ const rows=(S.pics||[]).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.title||'-')}</td><td>${p.username&&p.passHash?esc(p.username):'<span class="mt">Belum ada akun</span>'}</td><td>${p.username&&p.passHash?'<span class="b '+(picRole(p)==='user'?'er':picRole(p)==='supervisor'?'wa':'ok')+'">'+roleLabel(picRole(p))+'</span>':'-'}</td><td>${p.active===false?'<span class="b er">Nonaktif</span>':'<span class="b ok">Aktif</span>'}</td><td><button class="btn s" onclick="editPic('${p.id}')">Edit</button> <button class="btn s ${p.active===false?'p':'d'}" onclick="togglePic('${p.id}')">${p.active===false?'Aktifkan':'Nonaktifkan'}</button> <button class="btn s d" onclick="deletePic('${p.id}')">${pend==='picdel_'+p.id?'Yakin Hapus?':'Hapus'}</button></td></tr>`).join('')||'<tr><td colspan="6" class="mt">Belum ada PIC. Tambahkan PIC melalui form.</td></tr>';
+ return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div><div><label>Username Login</label><input id="pic_user" placeholder="Contoh: andi" autocomplete="off"></div><div><label id="pic_pass_lbl">Password Login</label><input id="pic_pass" type="password" placeholder="Min. 6 karakter" autocomplete="new-password"></div><div><label>Hak Akses (Authority)</label><select id="pic_role"><option value="admin">Admin (Operator Gudang)</option><option value="supervisor">Supervisor (Pengawas)</option><option value="user">User (Kendali Penuh)</option></select></div></div><p class="mt" style="margin-top:6px">Isi Username + Password agar PIC bisa login sendiri. Saat edit, kosongkan Password bila tidak ingin mengubahnya. PIC yang login otomatis tercatat pada transaksi masuk/keluar dan stock opname.</p><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Username</th><th>Hak Akses</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 /** ID PIC yang sedang diedit di form (null = mode tambah). */
@@ -2729,6 +2773,7 @@ let editPicId=null;
 function resetPicForm(){
  editPicId=null;
  const n=$('#pic_name'),t=$('#pic_title');
+ if($('#pic_user'))$('#pic_user').value='';if($('#pic_pass'))$('#pic_pass').value='';if($('#pic_role'))$('#pic_role').value='admin';
  if(n)n.value='';
  if(t)t.value='';
  const h=$('#picFormTitle');
@@ -2737,32 +2782,53 @@ function resetPicForm(){
 
 /** Mengisi form dengan data PIC untuk diedit. */
 function editPic(id){
- if(!['user','supervisor'].includes(currentUser))return toast('Akses ditolak.');
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const p=(S.pics||[]).find(x=>x.id===id);
  if(!p)return;
  editPicId=id;
  $('#pic_name').value=p.name;
  $('#pic_title').value=p.title||'';
+ $('#pic_user').value=p.username||'';$('#pic_pass').value='';$('#pic_role').value=picRole(p);
  $('#picFormTitle').textContent='Edit Data PIC';
  scrollTo(0,0);
 }
 
 /** Validasi (nama & jabatan wajib, nama tidak boleh ganda) lalu tambah/ubah PIC. Saat ubah, riwayat transaksi lama ikut disinkronkan. */
-function savePic(){
- if(!['user','supervisor'].includes(currentUser))return toast('Akses ditolak.');
+async function savePic(){
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const name=$('#pic_name')?.value.trim(),title=$('#pic_title')?.value.trim();
+ const uname=($('#pic_user')?.value||'').trim().toLowerCase(),pw=($('#pic_pass')?.value||'');
  if(!name||!title)return toast('Nama dan jabatan PIC wajib diisi.');
  if((S.pics||[]).some(p=>p.id!==editPicId&&p.name.toLowerCase()===name.toLowerCase()))return toast('Nama PIC sudah terdaftar.');
+ const cur=editPicId?(S.pics||[]).find(x=>x.id===editPicId):null;
+ if(uname){
+  if(!/^[a-z0-9._-]{3,30}$/.test(uname))return toast('Username 3-30 karakter: huruf kecil, angka, titik, strip, atau underscore (tanpa spasi).');
+  if(Object.hasOwn(ACCOUNTS,uname))return toast('Username itu dipakai akun sistem. Gunakan username lain.');
+  if((S.pics||[]).some(p=>p.id!==editPicId&&p.username&&String(p.username).toLowerCase()===uname))return toast('Username sudah dipakai PIC lain.');
+  if(!(cur&&cur.passHash)&&pw.length<6)return toast('Password minimal 6 karakter.');
+  if(pw&&pw.length<6)return toast('Password minimal 6 karakter.');
+ }else if(pw)return toast('Isi Username dulu bila ingin mengatur Password.');
+ // Hak akses ditentukan akun User (fungsi ini hanya bisa dijalankan User)
+ let role=cur?picRole(cur):'admin';
+ {const rv=$('#pic_role')?.value;if(Object.hasOwn(ACCOUNTS,rv))role=rv}
+ if(cur&&cur.id===currentPicId&&role!==picRole(cur))return toast('Tidak dapat mengubah hak akses akun yang sedang Anda pakai.');
+ let cred=null;
+ if(uname){
+  if(pw){const salt=newSalt();cred={username:uname,salt,passHash:await hashPw(salt,pw)}}
+  else cred={username:uname,salt:cur.salt,passHash:cur.passHash};
+ }
  if(editPicId){
   const p=S.pics.find(x=>x.id===editPicId);
   if(p){
    const old=p.name;
    p.name=name;
    p.title=title;
+   if(cred){p.username=cred.username;p.salt=cred.salt;p.passHash=cred.passHash;p.role=role}
+   else{delete p.username;delete p.salt;delete p.passHash;delete p.role}
    // Sinkronkan nama & jabatan PIC pada riwayat transaksi lama
    S.tx.forEach(t=>{if(t.pic===old){t.pic=name;t.picTitle=title;}});
   }
- }else S.pics.push({id:uid(),name,title,active:true,createdBy:currentUser});
+ }else S.pics.push({id:uid(),name,title,active:true,createdBy:currentUser,...(cred?{...cred,role}:{})});
  editPicId=null;
  save();
  toast('Master PIC berhasil disimpan.');
@@ -2771,7 +2837,7 @@ function savePic(){
 
 /** Mengaktifkan / menonaktifkan PIC. */
 function togglePic(id){
- if(!['user','supervisor'].includes(currentUser))return toast('Akses ditolak.');
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const p=(S.pics||[]).find(x=>x.id===id);
  if(!p)return;
  p.active=p.active===false;
@@ -2782,7 +2848,7 @@ function togglePic(id){
 
 /** Menghapus PIC dengan konfirmasi dua klik (riwayat transaksi tetap). */
 function deletePic(id){
- if(!['user','supervisor'].includes(currentUser))return toast('Akses ditolak.');
+ if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const p=(S.pics||[]).find(x=>x.id===id);
  if(!p)return;
  if(pend!=='picdel_'+id){
@@ -2827,14 +2893,14 @@ function vOpname(){
   <td class="r"><b style="color:${o.diff===0?'var(--ok)':o.diff>0?'var(--ok)':'var(--er)'}">${o.diff>0?'+':''}${num(o.diff)}</b></td>
   <td>${esc(o.pic||'-')}${o.picTitle?`<small>${esc(o.picTitle)}</small>`:''}</td>
   <td>${esc(o.note||'-')}</td>
-  <td>${currentUser!=='supervisor'?`<button class="btn s d" onclick="delOpnameRecord('${o.id}')">${pend==='opn_'+o.id?'Yakin Hapus?':'Hapus'}</button>`:'<small class="mt">Hanya Lihat</small>'}</td>
+  <td><button class="btn s d" onclick="delOpnameRecord('${o.id}')">${pend==='opn_'+o.id?'Yakin Hapus?':'Hapus'}</button></td>
  </tr>`).join('');
  return `<div class="page-head"><div><h2>🧮 Stock Opname</h2><p class="page-subtitle">Tambahkan hasil hitung fisik beberapa sparepart ke daftar pemeriksaan, periksa kembali selisihnya, lalu konfirmasi untuk menyesuaikan stok sekaligus.</p></div><div class="page-actions"><button class="btn p" onclick="printStockOpnameSheet()">📄 Cetak Form Perbandingan PDF</button></div></div>
  <div class="card"><div class="fm">
   <div><label>Barang *</label><input id="op_item" list="op_dl" placeholder="Cari SKU / nama barang" autocomplete="off" onchange="opnameInfo()" oninput="opnameInfo()"><datalist id="op_dl">${S.items.map(i=>`<option value="${esc(i.sku+' · '+i.name)}">Stok Sistem: ${num(i.stock)} ${esc(i.unit)}</option>`).join('')}</datalist><div id="op_hint" class="mt" style="font-size:12px;margin-top:4px">Pilih barang untuk melihat stok sistem.</div></div>
   <div><label>Stok Sistem Saat Ini</label><input id="op_system" readonly placeholder="Otomatis"></div>
   <div><label>Stok Fisik (Hasil Hitung) *</label><input id="op_actual" type="text" inputmode="decimal" oninput="cleanDec(this)" placeholder="Ketik hasil hitung fisik…" onkeydown="if(event.key==='Enter')addOpnameToQueue()"></div>
-  <div><label>PIC Opname *</label><select id="op_pic"><option value="">-- Pilih PIC --</option>${(S.pics||[]).filter(p=>p.active!==false).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}${p.title?' — '+esc(p.title):''}</option>`).join('')}</select><small class="mt">Pilih dari Master PIC. Admin hanya dapat memilih PIC yang telah didaftarkan User/Supervisor.</small></div>
+  <div><label>PIC Opname${curPic()?'':' *'}</label>${picFieldHtml('op_pic')}</div>
   <div style="grid-column:1/-1"><label>Keterangan (Lokasi / Kondisi / Alasan Selisih)</label><input id="op_note" placeholder="Contoh: Rak A-01 sesuai fisik / 1 pcs rusak korosi" onkeydown="if(event.key==='Enter')addOpnameToQueue()"></div>
  </div>
  <div style="margin-top:16px"><button class="btn p" onclick="addOpnameToQueue()">＋ Tambahkan ke Daftar Pemeriksaan Opname</button></div></div>
@@ -2885,11 +2951,10 @@ function drawOpnameQueue(){
 
 /** Tambahkan satu baris hasil hitung fisik ke daftar pemeriksaan Stock Opname, tanpa mengubah stok. */
 function addOpnameToQueue(){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor hanya dapat melihat data.');
  const i=findOpItem($('#op_item')?.value);
  const rawActual=String($('#op_actual')?.value??'').trim();
  const actual=r3(parseDec(rawActual));
- const pic=($('#op_pic')?.value||'').trim();
+ const pic=picValue('op_pic');
  const note=($('#op_note')?.value||'').trim();
  if(!i)return toast('Pilih barang yang valid dari daftar.');
  if(rawActual===''||!Number.isFinite(actual)||actual<0)return toast('Isi stok fisik dengan angka 0 atau lebih.');
@@ -2964,7 +3029,6 @@ function clearOpnameQueue(){
 
 /** Validasi ulang seluruh daftar pemeriksaan opname lalu simpan sekaligus ke riwayat & sesuaikan stok. */
 function commitOpnameQueue(){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor hanya dapat melihat data.');
  const q=OPQ||[];
  if(!q.length)return toast('Daftar pemeriksaan opname masih kosong.');
  for(const x of q){
@@ -3008,7 +3072,6 @@ function saveOpname(){
 }
 
 function delOpnameRecord(id){
- if(currentUser==='supervisor')return toast('Akses ditolak! Supervisor tidak dapat menghapus riwayat.');
  if(pend!=='opn_'+id){
   pend='opn_'+id;
   render();
@@ -3099,7 +3162,7 @@ function vData(){
   </div>
   <div class="card">
    <h3>📥 Import Data</h3>
-   <p class="mt">File <b>.json</b> menggantikan seluruh data (termasuk Data PIC). File <b>.csv</b> otomatis dikenali: berkolom <b>sku</b> memperbarui stok/harga atau menambah SKU baru, berkolom <b>nama</b> dan <b>jabatan</b> memperbarui Data PIC berdasarkan nama.</p>
+   <p class="mt">File <b>.json</b> menggantikan seluruh data (termasuk Data PIC). File <b>.csv</b> otomatis dikenali: berkolom <b>sku</b> memperbarui stok atau menambah SKU baru, berkolom <b>nama</b> dan <b>jabatan</b> memperbarui Data PIC berdasarkan nama.</p>
    <input id="imp" type="file" accept=".json,.csv" style="margin-bottom:10px">
    <div style="display:flex;gap:8px;flex-wrap:wrap">
     <button class="btn p" onclick="doImport()">⬆️ Proses Import</button>
@@ -3114,11 +3177,11 @@ function vData(){
    <h3 style="margin:0">📌 Panduan & Contoh Format CSV Suku Cadang</h3>
    <button class="btn s p" onclick="expSampleCSV()">⬇️ Unduh Template Contoh (.csv)</button>
   </div>
-  <p class="mt" style="font-size:13px;margin:0 0 10px">Gunakan pemisah titik koma (<code>;</code>) atau koma (<code>,</code>). Kolom <b>sku</b> dan <b>nama</b> wajib diisi. Angka berformat Indonesia seperti <code>45.000</code> atau <code>1,5</code> dikenali otomatis. Berikut adalah contoh isi file CSV yang valid:</p>
-  <pre style="background:var(--bg);border:1px solid var(--bd);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;margin:0">sku;nama;kategori;lokasi;satuan;stok;minimum;harga;supplier
-MEK-001;Bearing 6205 ZZ;Mekanikal;A-01;pcs;50;20;45000;PT Sinar Bearing
-ELK-004;Relay Omron MY2N 24VDC;Elektrikal;B-04;unit;15;5;65000;PT Otomasi Nusantara
-PLM-003;Chain Lube Spray 400ml;Pelumas;C-03;kaleng;24;10;55000;PT Pelumas Utama</pre>
+  <p class="mt" style="font-size:13px;margin:0 0 10px">Gunakan pemisah titik koma (<code>;</code>) atau koma (<code>,</code>). Kolom <b>sku</b> dan <b>nama</b> wajib diisi. Angka berformat Indonesia seperti <code>1.250</code> atau <code>1,5</code> dikenali otomatis. Berikut adalah contoh isi file CSV yang valid:</p>
+  <pre style="background:var(--bg);border:1px solid var(--bd);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;margin:0">sku;nama;kategori;lokasi;satuan;stok;minimum;supplier
+MEK-001;Bearing 6205 ZZ;Mekanikal;A-01;pcs;50;20;PT Sinar Bearing
+ELK-004;Relay Omron MY2N 24VDC;Elektrikal;B-04;unit;15;5;PT Otomasi Nusantara
+PLM-003;Chain Lube Spray 400ml;Pelumas;C-03;kaleng;24;10;PT Pelumas Utama</pre>
   <p class="mt" style="font-size:13px;margin:12px 0 8px">Format CSV <b>Data PIC</b> (kolom <b>nama</b> dan <b>jabatan</b> wajib, kolom <b>status</b> opsional berisi <code>aktif</code> atau <code>nonaktif</code>). PIC dengan nama yang sama akan diperbarui, nama baru akan ditambahkan:</p>
   <pre style="background:var(--bg);border:1px solid var(--bd);padding:12px;border-radius:8px;overflow-x:auto;font-size:12px;margin:0">nama;jabatan;status
 Andi;Teknisi Mekanik;aktif
@@ -3141,11 +3204,11 @@ function expSamplePicCSV(){
 /** Mengunduh contoh file CSV Data Sparepart. */
 function expSampleCSV(){
  const sample=[
-  ['sku','nama','kategori','lokasi','satuan','stok','minimum','harga','supplier'],
-  ['MEK-001','Bearing 6205 ZZ','Mekanikal','A-01','pcs',50,20,45000,'PT Sinar Bearing'],
-  ['ELK-004','Relay Omron MY2N 24VDC','Elektrikal','B-04','unit',15,5,65000,'PT Otomasi Nusantara'],
-  ['PLM-003','Chain Lube Spray 400ml','Pelumas','C-03','kaleng',24,10,55000,'PT Pelumas Utama'],
-  ['APD-002','Kacamata Safety Clear','APD','E-03','pcs',30,10,25000,'PT Safety Pratama']
+  ['sku','nama','kategori','lokasi','satuan','stok','minimum','supplier'],
+  ['MEK-001','Bearing 6205 ZZ','Mekanikal','A-01','pcs',50,20,'PT Sinar Bearing'],
+  ['ELK-004','Relay Omron MY2N 24VDC','Elektrikal','B-04','unit',15,5,'PT Otomasi Nusantara'],
+  ['PLM-003','Chain Lube Spray 400ml','Pelumas','C-03','kaleng',24,10,'PT Pelumas Utama'],
+  ['APD-002','Kacamata Safety Clear','APD','E-03','pcs',30,10,'PT Safety Pratama']
  ];
  dl('contoh-import-sparepart.csv','\ufeff'+sample.map(a=>a.map(csvc).join(';')).join('\r\n'),'text/csv');
 }
@@ -3307,13 +3370,12 @@ function printInventoryReport(w,from,to,hideIdle){
    Export CSV & Import
    -------------------------------------------------------------------------- */
 
-/** Mengunduh CSV. @param w "items" (barang) | "pics" (PIC) | selain itu = riwayat transaksi. Admin tidak mendapat kolom harga. */
+/** Mengunduh CSV. @param w "items" (barang) | "pics" (PIC) | selain itu = riwayat transaksi. */
 function expCSV(w){
  let h,r;
  if(w==='items'){
-  const showPrice=currentUser!=='admin';
-  h=['sku','nama','kategori','lokasi','satuan','stok','minimum',...(showPrice?['harga']:[]),'supplier'];
-  r=S.items.map(i=>[i.sku,i.name,i.cat,i.loc,i.unit,i.stock,i.min,...(showPrice?[i.price]:[]),i.sup]);
+  h=['sku','nama','kategori','lokasi','satuan','stok','minimum','supplier'];
+  r=S.items.map(i=>[i.sku,i.name,i.cat,i.loc,i.unit,i.stock,i.min,i.sup]);
  }else if(w==='pics'){
   h=['nama','jabatan','status'];
   r=(S.pics||[]).map(p=>[p.name,p.title||'',p.active===false?'nonaktif':'aktif']);
@@ -3381,11 +3443,11 @@ function doImport(){
     save();toast(pa+' PIC baru ditambahkan, '+pu+' PIC diperbarui');go('pic');return}
    if(ix('sku')<0||ix('nama')<0)throw 0;let add=0,upd=0;
    rows.forEach(a=>{const g=k=>ix(k)<0?'':(a[ix(k)]||'').trim();const sku=g('sku');if(!sku||!g('nama'))return;
-    const o={sku,name:g('nama'),cat:g('kategori')||'Umum',loc:g('lokasi'),unit:g('satuan')||'pcs',stock:r3(Math.max(0,idNum(g('stok')))),min:r3(Math.max(0,idNum(g('minimum')))),price:Math.max(0,idNum(g('harga'))),sup:g('supplier')};
+    const o={sku,name:g('nama'),cat:g('kategori')||'Umum',loc:g('lokasi'),unit:g('satuan')||'pcs',stock:r3(Math.max(0,idNum(g('stok')))),min:r3(Math.max(0,idNum(g('minimum')))),sup:g('supplier')};
     const e=S.items.find(i=>i.sku===sku);
     if(e){
      const diff=r3(o.stock-(Number(e.stock)||0));
-     Object.assign(e,o);
+     Object.assign(e,o);delete e.price;
      if(diff!==0)S.tx.push({id:uid(),date:today(),time:wibTime(),item:e.id,type:diff>0?'in':'out',qty:r3(Math.abs(diff)),pic:actor(),by:currentUser,isAdj:true,note:'Update stok via Import CSV'});
      upd++;
     }else{
