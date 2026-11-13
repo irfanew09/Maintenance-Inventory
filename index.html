@@ -114,8 +114,9 @@
  reqs[]       { id, itemId, sku, name, stockSnapshot, qty, unit, note }
  reqForms[]   { id, docNo 'PR-MNT/YYYYMMDD/NN', date, time,
                 items: [ { id, itemId, sku, name, stockSnapshot, qty, unit, note,
-                           received, receivedDate, receivedTime, receivedBy,
-                           recvQty, txId } ],
+                           received (true = lengkap), receivedDate, receivedTime, receivedBy,
+                           recvQty (total diterima), txId (kedatangan terakhir),
+                           parts: [ { id, qty, date, time, by, txId } ]  <- tiap kedatangan (parsial) } ],
                 completedDate?, completedTime? (terisi saat dipindah ke arsip) }
  opnames[]    { id, date, itemId, sku, name, systemQty, actualQty, diff, pic,
                 note, by }
@@ -274,6 +275,10 @@
              Halaman login: label 'Username (Akun PIC)'; blok 'Akun Uji Coba' dihapus.
  Update 21 : Hak akses diubah. Admin = Daftar Suku Cadang, Request, Proses Request, Masuk, Keluar, Transaksi Terakhir, Stock Opname.
              Supervisor = hak Admin + Master Barang Baru (tanpa Master PIC). User = semua fitur (termasuk Master PIC, Export/Import, edit/hapus master).
+ Update 21 : Penerimaan PARSIAL di Proses Request. Barang yang datang sebagian (jumlah < pesanan) langsung masuk ke stok
+             Daftar Suku Cadang + Riwayat Barang Masuk, tetapi baris PR tetap terbuka dengan SISA yang masih ditunggu.
+             Form PR baru pindah ke Arsip PR setelah semua baris lengkap. Tiap kedatangan tercatat di baris (field parts[])
+             dan bisa dibatalkan satu per satu. Data lama (tanpa parts) tetap terbaca. Fungsi: receiveReqItem(), undoReceivePart().
  Update 20b: Akun PIC punya Hak Akses (User / Supervisor / Admin) yang ditentukan akun User saat membuat/mengedit PIC (field role pada Master PIC; default Admin).
  Update 20 : Akun login per PIC. Master PIC kini punya Username + Password (disimpan sebagai hash SHA-256 + salt). PIC yang login
              otomatis tercatat sebagai PIC pada Suku Cadang Masuk/Keluar, Stock Opname, dan Penerimaan di Proses Request
@@ -1108,16 +1113,40 @@ function memoBy(name,key,fn){
 /** Peta kode barang -> jumlah dalam Form PR berjalan yang belum diterima. Dihitung sekali per perubahan data. */
 const pendMap=()=>memoBy('pend','',()=>{
  const m=new Map();
- (S.reqForms||[]).forEach(f=>(f.items||[]).forEach(x=>{if(!x.received)m.set(x.itemId,(m.get(x.itemId)||0)+(Number(x.qty)||0))}));
+ (S.reqForms||[]).forEach(f=>(f.items||[]).forEach(x=>{if(!x.received){const rm=rowRemain(x);if(rm>0)m.set(x.itemId,(m.get(x.itemId)||0)+rm)}}));
  return m;
 });
 const pendQty=id=>pendMap().get(id)||0;
+
+/** Daftar kedatangan (penerimaan parsial) sebuah baris PR. Baris lama tanpa parts yang sudah diterima dibaca sebagai satu kedatangan. */
+function rowParts(r){
+ if(Array.isArray(r.parts))return r.parts;
+ if(r.parts&&typeof r.parts==='object')return Object.keys(r.parts).sort((a,b)=>a-b).map(k=>r.parts[k]).filter(Boolean);
+ if(r.received)return [{id:'legacy',qty:Number(r.recvQty??r.qty)||0,date:r.receivedDate||'',time:r.receivedTime||'',by:r.receivedBy||'',txId:r.txId||null}];
+ return [];
+}
+/** Total yang sudah diterima untuk satu baris PR. */
+function rowRecv(r){return r3(rowParts(r).reduce((a,p)=>a+(Number(p.qty)||0),0))}
+/** Sisa yang masih ditunggu untuk satu baris PR (0 bila sudah lengkap). */
+function rowRemain(r){return r3(Math.max(0,(Number(r.qty)||0)-rowRecv(r)))}
+/** Mengubah baris lama menjadi format parts[] sebelum diubah. */
+function ensureParts(r){if(!Array.isArray(r.parts))r.parts=rowParts(r).map(p=>p.id==='legacy'?{...p,id:uid()}:p)}
+/** Menyelaraskan field ringkas baris (received, recvQty, receivedDate/Time/By, txId) dengan parts[]. */
+function syncRowReceipt(r){
+ const ps=rowParts(r),last=ps[ps.length-1];
+ if(ps.length)r.recvQty=rowRecv(r);else delete r.recvQty;
+ r.received=ps.length>0&&rowRemain(r)<=0;
+ r.receivedDate=last?(last.date||''):'';
+ r.receivedTime=last?(last.time||''):'';
+ r.receivedBy=last?(last.by||''):'';
+ r.txId=last?(last.txId||null):null;
+}
 
 /** HTML lencana "+N dalam PR" bila barang sedang dipesan. */
 const pendBadge=i=>{const q=pendQty(i.id);return q>0?` <span class="b" title="Sudah ada dalam PR yang sedang diproses">📦 +${num(q)} dalam PR</span>`:''};
 
 /** Nomor dokumen PR yang menjadi asal sebuah transaksi masuk ("" bila bukan dari PR). Dipakai agar transaksi dari PR tidak dihapus lewat riwayat. */
-const prLinkOfTx=txId=>{for(const f of [...(S.reqForms||[]),...(S.reqArchive||[])]){if((f.items||[]).some(x=>x.txId===txId))return f.docNo}return''};
+const prLinkOfTx=txId=>{for(const f of [...(S.reqForms||[]),...(S.reqArchive||[])]){if((f.items||[]).some(x=>x.txId===txId||rowParts(x).some(p=>p.txId===txId)))return f.docNo}return''};
 
 /** Menjelaskan di mana barang masih dipakai (draft request / Form PR). Dipakai untuk mencegah penghapusan barang. */
 function itemUsageRef(id){
@@ -1510,12 +1539,13 @@ function dashboardStatusChartsHtml(){
   if(!f || (f.id && seen.has(f.id)))return;
   if(f.id)seen.add(f.id);
   const rows=Array.isArray(f.items)?f.items:[];
-  const received=rows.filter(x=>x && x.received===true).length;
+  const started=rows.filter(x=>x && (x.received===true||rowRecv(x)>0)).length;
+  const full=rows.filter(x=>x && x.received===true).length;
   if(archived.includes(f)){
    completed++;
-  }else if(rows.length===0 || received===0){
+  }else if(rows.length===0 || started===0){
    waiting++;
-  }else if(received<rows.length){
+  }else if(full<rows.length){
    partial++;
   }else{
    completed++;
@@ -2467,7 +2497,7 @@ function printReqFormPDF(formObj){
    <td class="num">${num(curStock)}</td>
    <td class="num"><b>${num(r.qty)}</b></td>
    <td class="c">${esc(unit)}</td>
-   <td>${esc(noteText)}${isArchived&&r.receivedDate?`<br><small style="color:#16a34a">✓ Diterima ${num(r.recvQty??r.qty)} ${esc(unit)}: ${esc(r.receivedDate)} ${esc(r.receivedTime||'')} (${esc(r.receivedBy||'Admin')})</small>`:''}</td>
+   <td>${esc(noteText)}${isArchived&&r.receivedDate?(()=>{const ps=rowParts(r);return ps.length>1?ps.map(p=>`<br><small style="color:#16a34a">✓ Diterima ${num(p.qty)} ${esc(unit)}: ${esc(p.date||'')} ${esc(p.time||'')} (${esc(p.by||'Admin')})</small>`).join(''):`<br><small style="color:#16a34a">✓ Diterima ${num(r.recvQty??r.qty)} ${esc(unit)}: ${esc(r.receivedDate)} ${esc(r.receivedTime||'')} (${esc(r.receivedBy||'Admin')})</small>`})():''}</td>
   </tr>`;
  }).join('');
 
@@ -2556,11 +2586,12 @@ function printReqFormPDF(formObj){
    Menu     : tab "proc" -> vProc(). Sub-tab: "active" (form berjalan) dan "archive" (arsip).
    Akses    : semua melihat; ceklis penerimaan & hapus form = bukan supervisor; hapus arsip = user.
    Data     : S.reqForms, S.reqArchive, S.items (stok), S.tx (transaksi masuk otomatis).
-   Alur     : ceklis baris (toggleReceiveReqItem) -> stok bertambah + transaksi masuk bertaut txId.
-              Semua baris diterima -> form pindah ke S.reqArchive (completedDate/Time).
-              Batal ceklis -> stok dikurangi & transaksi dihapus (ditolak bila stok sudah terpakai).
+   Alur     : isi jumlah datang + klik Terima (receiveReqItem) -> stok bertambah + transaksi masuk bertaut txId.
+              Jumlah < pesanan (parsial) -> baris tetap terbuka dengan sisa; PR belum close.
+              Semua baris lengkap -> form pindah ke S.reqArchive (completedDate/Time).
+              Batal satu kedatangan (undoReceivePart) -> stok dikurangi & transaksi dihapus (ditolak bila stok sudah terpakai).
    Umur form: prAgeDays/prAgeBadge menandai form yang lama belum selesai.
-   Cara ubah: Tampilan kartu/tabel form -> vProc(). Logika penerimaan -> toggleReceiveReqItem().
+   Cara ubah: Tampilan kartu/tabel form -> vProc(). Logika penerimaan -> receiveReqItem() / undoReceivePart().
    ========================================================================== */
 
 /** Berpindah sub-tab Proses Request ("active" | "archive"). */
@@ -2608,15 +2639,19 @@ function vProc(){
   const archCards=filteredArch.map(f=>{
    const total=f.items.length;
    const isOpen=openArchId===f.id;
-   const rows=f.items.map((it,idx)=>`<tr>
+   const rows=f.items.map((it,idx)=>{
+    const ps=rowParts(it),rv=rowRecv(it)||Number(it.qty)||0;
+    const who=[...new Set(ps.map(p=>p.by).filter(Boolean))].join(', ')||it.receivedBy||'Admin Gudang';
+    const multi=ps.length>1;
+    return `<tr>
     <td class="c">${idx+1}</td>
     <td><b>${esc(it.sku)}</b></td>
     <td>${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:''}</td>
     <td class="r">${num(it.stockSnapshot??0)} ${esc(it.unit)}</td>
-    <td class="r"><b>+${num(it.recvQty??it.qty)}</b> ${esc(it.unit)}${Number(it.recvQty??it.qty)!==Number(it.qty)?`<small>dipesan ${num(it.qty)}</small>`:''}</td>
-    <td><b>${esc(it.receivedBy||'Admin Gudang')}</b></td>
-    <td><span class="b ok">✓ Diterima (${esc(it.receivedDate||f.completedDate||'-')}${it.receivedTime?' '+esc(it.receivedTime)+' WIB':''})</span></td>
-   </tr>`).join('');
+    <td class="r"><b>+${num(rv)}</b> ${esc(it.unit)}${rv!==Number(it.qty)?`<small>dipesan ${num(it.qty)}</small>`:''}${multi?`<small>${ps.length}x kedatangan</small>`:''}</td>
+    <td><b>${esc(who)}</b></td>
+    <td><span class="b ok">✓ Diterima (${esc(it.receivedDate||f.completedDate||'-')}${it.receivedTime?' '+esc(it.receivedTime)+' WIB':''})</span>${multi?ps.map(p=>`<small>+${num(p.qty)} ${esc(it.unit)} · ${esc(p.date||'')}${p.time?' '+esc(p.time):''} · ${esc(p.by||'-')}</small>`).join(''):''}</td>
+   </tr>`}).join('');
 
    return `<div class="card pr-card ${isOpen?'open':''}">
     <div class="pr-head" onclick="toggleOpenArch('${f.id}')">
@@ -2655,7 +2690,7 @@ function vProc(){
    </div>`;
   }).join('')||`<div class="card" style="text-align:center;padding:32px">
    <h3 style="margin-bottom:6px">Belum Ada Arsip Request Selesai yang Cocok</h3>
-   <p class="mt" style="margin:0">Form Request yang seluruh barangnya telah selesai dicentang pada tab <b>⏳ Dalam Proses</b> akan otomatis tersimpan di halaman arsip ini.</p>
+   <p class="mt" style="margin:0">Form Request yang seluruh barangnya telah diterima lengkap pada tab <b>⏳ Dalam Proses</b> akan otomatis tersimpan di halaman arsip ini.</p>
   </div>`;
 
   return `<div class="page-head">
@@ -2678,25 +2713,27 @@ function vProc(){
  const activeCards=S.reqForms.map(f=>{
   const total=f.items.length;
   const done=f.items.filter(x=>x.received).length;
-  const pct=total?Math.round(done/total*100):0;
+  const partialRows=f.items.filter(x=>!x.received&&rowRecv(x)>0).length;
+  const pct=total?Math.round(f.items.reduce((a,x)=>a+(x.received?1:(Number(x.qty)>0?Math.min(1,rowRecv(x)/Number(x.qty)):0)),0)/total*100):0;
   const isOpen=openFormId===f.id;
+  const partBadge='background:rgba(59,130,246,.15);color:#3b82f6';
   const rows=f.items.map((it,idx)=>{
    const master=findById(it.itemId);
    const curStock=master?master.stock:(it.stockSnapshot??0);
-   return `<tr class="${it.received?'done-row':''}">
+   const ps=rowParts(it),got=rowRecv(it),remain=rowRemain(it),complete=Boolean(it.received);
+   const log=ps.length?ps.map((p,pi)=>`<small style="display:block">#${pi+1} +${num(p.qty)} ${esc(it.unit)} · ${esc(p.date||'')}${p.time?' '+esc(p.time):''} · ${esc(p.by||'-')} <button class="btn s" style="padding:0 6px;font-size:11px" title="Batalkan kedatangan ini (stok dikurangi)" onclick="undoReceivePart('${f.id}','${it.id}','${esc(p.id)}')">↩ Batal</button></small>`).join(''):'';
+   const status=complete?`<span class="b ok">✓ Lengkap</span>`:(got>0?`<span class="b" style="${partBadge}">🔵 Sebagian (${num(got)} / ${num(it.qty)})</span>`:`<span class="b wa">⏳ Belum Diterima</span>`);
+   return `<tr class="${complete?'done-row':''}">
     <td class="c">${idx+1}</td>
     <td><b>${esc(it.sku)}</b></td>
-    <td>${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:''}</td>
+    <td>${esc(it.name)}${it.note?`<small>${esc(it.note)}</small>`:''}${log}</td>
     <td class="r">${num(curStock)} ${esc(it.unit)}</td>
     <td class="r"><b>${num(it.qty)}</b> ${esc(it.unit)}</td>
-    <td class="r"><input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(it.received?(it.recvQty??it.qty):it.qty)}" ${it.received?'disabled':''} oninput="cleanDec(this)" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}${it.received&&Number(it.recvQty??it.qty)!==Number(it.qty)?`<small>dipesan ${num(it.qty)}</small>`:''}</td>
-    <td>${it.received?`<span class="b ok">✓ Sudah Diterima (${esc(it.receivedDate||'')}${it.receivedTime?' '+esc(it.receivedTime):''})</span>`:`<span class="b wa">⏳ Belum Diterima</span>`}</td>
-    <td class="c">
-     <label class="chk-wrap" title="${it.received?'Klik untuk membatalkan penerimaan':'Centang jika barang sudah diterima di gudang'}">
-      <input type="checkbox" ${it.received?'checked':''} onchange="toggleReceiveReqItem('${f.id}','${it.id}',this.checked)">
-      <span>${it.received?'Diterima':'Terima'}</span>
-     </label>
-    </td>
+    <td class="r">${num(got)} ${esc(it.unit)}</td>
+    <td class="r">${complete?'-':`<b style="color:var(--wa)">${num(remain)}</b> ${esc(it.unit)}`}</td>
+    <td class="r">${complete?'-':`<input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(remain)}" oninput="cleanDec(this)" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}`}</td>
+    <td>${status}</td>
+    <td class="c">${complete?'':`<button class="btn s p" title="Catat barang yang datang sekarang. Jika kurang dari sisa, PR tetap terbuka." onclick="receiveReqItem('${f.id}','${it.id}')">📥 Terima</button>`}</td>
    </tr>`;
   }).join('');
 
@@ -2705,7 +2742,7 @@ function vProc(){
     <div>
      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <b style="font-size:15px;color:var(--ac)">📄 ${esc(f.docNo)}</b>
-      <span class="b ${done>0?'wa':'er'}">${done} / ${total} Item Diterima</span>${prAgeBadge(f)}
+      <span class="b ${done>0||partialRows>0?'wa':'er'}">${done} / ${total} Item Diterima</span>${partialRows?`<span class="b" style="${partBadge}">${partialRows} Item Sebagian</span>`:''}${prAgeBadge(f)}
      </div>
      <div class="mt" style="font-size:12px;margin-top:3px">Tanggal Pengajuan: ${esc(f.date)} · Pukul ${esc(f.time||'-')} WIB &nbsp;|&nbsp; Klik untuk ${isOpen?'menyembunyikan':'melihat'} daftar sparepart</div>
     </div>
@@ -2721,7 +2758,7 @@ function vProc(){
    </div>
    ${isOpen?`<div class="pr-body">
     <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:10px">
-     <div style="font-size:13px"><b>Daftar Sparepart dalam Form ${esc(f.docNo)}:</b> Isi jumlah aktual yang datang (jika berbeda dari pesanan), lalu centang kolom di kanan.</div>
+     <div style="font-size:13px"><b>Daftar Sparepart dalam Form ${esc(f.docNo)}:</b> Isi jumlah yang datang saat ini lalu klik <b>📥 Terima</b>. Jika jumlahnya kurang dari pesanan, stok tetap bertambah dan PR tetap terbuka menunggu sisanya.</div>
      <div style="display:flex;align-items:center;gap:8px">
       <label style="margin:0;font-size:12px">👤 PIC Penerima:</label>
       ${curPic()?`<input value="${esc(curPic().name)}" readonly title="Otomatis sesuai akun yang login" style="width:190px;padding:5px 9px;background:var(--sf2);cursor:not-allowed">`:`<input list="pic_dl" placeholder="Nama penerima (opsional)" value="${esc(rcvPic)}" oninput="rcvPic=this.value" style="width:190px;padding:5px 9px;background:var(--sf)">`}
@@ -2736,9 +2773,11 @@ function vProc(){
         <th>Nama Sparepart</th>
         <th class="r">Stok Gudang Saat Ini</th>
         <th class="r">Jumlah Dipesan</th>
-        <th class="r">Jumlah Diterima</th>
+        <th class="r">Sudah Diterima</th>
+        <th class="r">Sisa</th>
+        <th class="r">Terima Sekarang</th>
         <th>Status Kedatangan</th>
-        <th class="c" style="width:120px">Ceklis Terima</th>
+        <th class="c" style="width:110px">Aksi</th>
        </tr>
       </thead>
       <tbody>${rows}</tbody>
@@ -2758,7 +2797,7 @@ function vProc(){
  return `<div class="page-head">
   <div>
    <h2>⏳ Proses Request Sparepart (Monitoring Kedatangan)</h2>
-   <p class="page-subtitle">Klik pada Nomor Form Request untuk melihat daftar sparepart. Saat seluruh barang dalam 1 form selesai dicentang, form akan otomatis berpindah ke <b>🗄️ Arsip PR</b>.</p>
+   <p class="page-subtitle">Klik pada Nomor Form Request untuk melihat daftar sparepart. Barang yang datang sebagian langsung masuk stok, namun form tetap di sini sampai seluruh barang diterima lengkap. Setelah itu form otomatis berpindah ke <b>🗄️ Arsip PR</b>.</p>
   </div>
   <div class="page-actions">
    <button class="btn p" onclick="go('req')">＋ Buat Form Request Baru</button>
@@ -2792,87 +2831,94 @@ function archSearch(v){
 }
 
 /**
- * Inti penerimaan barang. isChecked=true: tambah stok + buat transaksi masuk (catat PIC penerima rcvPic & jumlah diterima).
- * Bila semua baris selesai: pindahkan form ke arsip. isChecked=false: batalkan penerimaan (stok & transaksi dikembalikan).
- * @param formId id Form PR, rowId id baris, isChecked status ceklis baru.
+ * Inti penerimaan barang (mendukung penerimaan PARSIAL). Jumlah yang datang (input rq_<id>) ditambahkan ke stok
+ * dan dicatat sebagai transaksi masuk bertaut txId. Bila total diterima < jumlah dipesan, baris tetap terbuka
+ * dengan sisa dan PR belum close. Bila semua baris lengkap, form dipindah ke arsip.
+ * @param formId id Form PR, rowId id baris.
  */
-function toggleReceiveReqItem(formId,rowId,isChecked){
+function receiveReqItem(formId,rowId){
  const f=(S.reqForms||[]).find(x=>x.id===formId);
  if(!f)return;
  const row=(f.items||[]).find(x=>x.id===rowId);
  if(!row)return;
-
  let master=findById(row.itemId);
  if(!master)master=S.items.find(x=>x.sku===row.sku);
  if(!master){toast('Master barang ini sudah dihapus, penerimaan tidak dapat dicatat.');render();return}
-
- if(isChecked && !row.received){
-  const inp=document.getElementById('rq_'+rowId);
-  const qty=r3(inp?parseDec(inp.value):(Number(row.qty)||0));
-  if(!(qty>0)){toast('Isi jumlah yang diterima (lebih dari 0)');render();return}
-  const picName=curPic()?curPic().name:(rcvPic.trim()||'Admin Gudang');
-  row.received=true;
-  row.receivedDate=today();
-  row.receivedTime=wibTime();
-  row.receivedBy=picName;
-  row.recvQty=qty;
-  master.stock=r3((Number(master.stock)||0)+qty);
-  const txId=uid();
-  row.txId=txId;
-  S.tx.push({
-   id:txId,
-   date:today(),
-   time:wibTime(),
-   item:master.id,
-   type:'in',
-   qty:qty,
-   pic:picName,
-   by:currentUser,
-   note:`Diterima dari Form ${f.docNo}`+(qty!==Number(row.qty)?` (dipesan ${num(row.qty)})`:'')
-  });
-  const diffNote=qty<Number(row.qty)?` — kurang ${num(r3(row.qty-qty))} dari pesanan`:(qty>Number(row.qty)?` — lebih ${num(r3(qty-row.qty))} dari pesanan`:'');
-
-  const allDone=f.items.every(x=>x.received);
-  if(allDone){
-   if(!Array.isArray(S.reqArchive))S.reqArchive=[];
-   f.completedDate=today();
-   f.completedTime=wibTime();
-   S.reqArchive.unshift(f);
-   S.reqForms=S.reqForms.filter(x=>x.id!==formId);
-   openFormId=S.reqForms[0]?.id||null;
-   openArchId=f.id;
-   save();
-   renderNav();
-   render();
-   toast(`Semua item ${f.docNo} diterima! Form selesai & dipindahkan ke Arsip PR.`);
-   return;
-  }
+ if(row.received){toast('Item ini sudah diterima lengkap.');render();return}
+ const inp=document.getElementById('rq_'+rowId);
+ const qty=r3(inp?parseDec(inp.value):rowRemain(row));
+ if(!(qty>0)){toast('Isi jumlah yang diterima (lebih dari 0)');render();return}
+ const picName=curPic()?curPic().name:(rcvPic.trim()||'Admin Gudang');
+ const ordered=Number(row.qty)||0;
+ const before=rowRecv(row);
+ const after=r3(before+qty);
+ const txId=uid();
+ ensureParts(row);
+ row.parts.push({id:uid(),qty:qty,date:today(),time:wibTime(),by:picName,txId:txId});
+ syncRowReceipt(row);
+ master.stock=r3((Number(master.stock)||0)+qty);
+ let tag='';
+ if(after<ordered)tag=` (sebagian: total ${num(after)} dari ${num(ordered)})`;
+ else if(after>ordered)tag=` (dipesan ${num(ordered)}, lebih ${num(r3(after-ordered))})`;
+ else if(before>0)tag=` (pelunasan: total ${num(after)} dari ${num(ordered)})`;
+ S.tx.push({
+  id:txId,
+  date:today(),
+  time:wibTime(),
+  item:master.id,
+  type:'in',
+  qty:qty,
+  pic:picName,
+  by:currentUser,
+  note:`Diterima dari Form ${f.docNo}`+tag
+ });
+ const allDone=f.items.every(x=>x.received);
+ if(allDone){
+  if(!Array.isArray(S.reqArchive))S.reqArchive=[];
+  f.completedDate=today();
+  f.completedTime=wibTime();
+  S.reqArchive.unshift(f);
+  S.reqForms=S.reqForms.filter(x=>x.id!==formId);
+  openFormId=S.reqForms[0]?.id||null;
+  openArchId=f.id;
   save();
   renderNav();
   render();
-  toast(`"${row.name}" (+${num(qty)} ${row.unit}) masuk ke Stok & Riwayat Barang Masuk${diffNote}`);
- }else if(!isChecked && row.received){
-  const qty=Number(row.recvQty??row.qty)||0;
-  if(master.stock<qty){
-   toast('Gagal batal ceklis: stok barang saat ini sudah terpakai');
-   render();
-   return;
-  }
-  master.stock=r3(master.stock-qty);
-  if(row.txId){
-   S.tx=S.tx.filter(t=>t.id!==row.txId);
-   row.txId=null;
-  }
-  row.received=false;
-  row.receivedDate='';
-  row.receivedTime='';
-  row.receivedBy='';
-  delete row.recvQty;
-  save();
-  renderNav();
-  render();
-  toast(`Penerimaan "${row.name}" dibatalkan & stok dikembalikan`);
+  toast(`Semua item ${f.docNo} diterima lengkap! Form selesai & dipindahkan ke Arsip PR.`);
+  return;
  }
+ save();
+ renderNav();
+ render();
+ if(row.received)toast(`"${row.name}" lengkap (+${num(qty)} ${row.unit}) masuk ke Stok & Riwayat Barang Masuk`);
+ else toast(`"${row.name}" +${num(qty)} ${row.unit} masuk ke Stok. Baru ${num(after)} dari ${num(ordered)}, sisa ${num(rowRemain(row))}. PR tetap terbuka.`);
+}
+
+/** Membatalkan SATU kedatangan pada baris PR: stok dikurangi & transaksi masuknya dihapus (ditolak bila stok sudah terpakai). */
+function undoReceivePart(formId,rowId,partId){
+ const f=(S.reqForms||[]).find(x=>x.id===formId);
+ if(!f)return;
+ const row=(f.items||[]).find(x=>x.id===rowId);
+ if(!row)return;
+ const wasLegacy=!Array.isArray(row.parts)&&!(row.parts&&typeof row.parts==='object');
+ let master=findById(row.itemId);
+ if(!master)master=S.items.find(x=>x.sku===row.sku);
+ if(!master){toast('Master barang ini sudah dihapus, pembatalan tidak dapat dilakukan.');render();return}
+ const probe=rowParts(row);
+ const pi=wasLegacy?0:probe.findIndex(p=>p.id===partId);
+ if(pi<0)return;
+ const qty=Number(probe[pi].qty)||0;
+ if(master.stock<qty){toast('Gagal batal: stok barang saat ini sudah terpakai');render();return}
+ ensureParts(row);
+ const part=row.parts[pi];
+ master.stock=r3(master.stock-qty);
+ if(part.txId)S.tx=S.tx.filter(t=>t.id!==part.txId);
+ row.parts.splice(pi,1);
+ syncRowReceipt(row);
+ save();
+ renderNav();
+ render();
+ toast(`Kedatangan "${row.name}" (${num(qty)} ${row.unit}) dibatalkan & stok dikembalikan`);
 }
 
 /** Menghapus Form PR berjalan dengan konfirmasi dua klik. Bukan untuk supervisor. */
@@ -4149,7 +4195,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
     list.forEach(([r,i])=>{
      if(!r||typeof r!=='object'||r.id==null||r.id==='')return;
      const rec=clone(r);delete rec._i;
-     if(NESTED.includes(c))rec.items=arr(rec.items);
+     if(NESTED.includes(c))rec.items=arr(rec.items).map(x=>(x&&x.parts!==undefined)?{...x,parts:arr(x.parts)}:x);
      m.set(encKey(rec.id),{rec,h:recHash(rec),i});
     });
    }
