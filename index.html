@@ -264,6 +264,9 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 28 : Perbaikan Proses Request: isian "Terima Sekarang" pada item lain tidak lagi kembali ke jumlah awal saat satu item
+             diterima (atau saat halaman digambar ulang oleh sinkronisasi). Isian disimpan per baris di rcvDraft{} dan dihapus
+             hanya untuk baris yang berhasil diterima / dibatalkan. Fungsi yang diubah: vProc(), receiveReqItem(), undoReceivePart().
  Update 27 : Indikator umur Form PR di Proses Request diubah: hijau (0-7 hari), kuning (8-14 hari), merah (lebih dari 14 hari).
              Fungsi yang diubah: prAgeBadge().
  Update 26 : Penerimaan PARSIAL di Proses Request. Barang yang datang sebagian (jumlah kurang dari pesanan) langsung
@@ -825,6 +828,7 @@ let archQ='';           // kata kunci pencarian arsip PR
 let openFormId=null;    // id Form PR yang sedang terbuka (accordion)
 let openArchId=null;    // id arsip PR yang sedang terbuka
 let rcvPic='';          // nama PIC penerima pada ceklis penerimaan barang
+let rcvDraft={};        // isian "Terima Sekarang" per baris PR (id baris -> teks); menjaga isian tetap ada saat halaman digambar ulang
 
 /* Isian awal form dari tombol cepat (diisi quickTx/quickReq, dipakai & dikosongkan oleh go()) */
 let preItem='';         // barang untuk form Masuk/Keluar
@@ -2739,7 +2743,7 @@ function vProc(){
     <td class="r"><b>${num(it.qty)}</b> ${esc(it.unit)}</td>
     <td class="r">${num(got)} ${esc(it.unit)}</td>
     <td class="r">${complete?'-':`<b style="color:var(--wa)">${num(remain)}</b> ${esc(it.unit)}`}</td>
-    <td class="r">${complete?'-':`<input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(remain)}" oninput="cleanDec(this)" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}`}</td>
+    <td class="r">${complete?'-':`<input id="rq_${it.id}" type="text" inputmode="decimal" value="${esc(rcvDraft[it.id]!==undefined?rcvDraft[it.id]:remain)}" oninput="cleanDec(this);rcvDraft['${it.id}']=this.value" style="width:84px;text-align:right;padding:5px 8px"> ${esc(it.unit)}`}</td>
     <td>${status}</td>
     <td class="c">${complete?'':`<button class="btn s p" title="Catat barang yang datang sekarang. Jika kurang dari sisa, PR tetap terbuka." onclick="receiveReqItem('${f.id}','${it.id}')">📥 Terima</button>`}</td>
    </tr>`;
@@ -2854,8 +2858,9 @@ function receiveReqItem(formId,rowId){
  if(!master){toast('Master barang ini sudah dihapus, penerimaan tidak dapat dicatat.');render();return}
  if(row.received){toast('Item ini sudah diterima lengkap.');render();return}
  const inp=document.getElementById('rq_'+rowId);
- const qty=r3(inp?parseDec(inp.value):rowRemain(row));
+ const qty=r3(inp?parseDec(inp.value):(rcvDraft[rowId]!==undefined?parseDec(rcvDraft[rowId]):rowRemain(row)));
  if(!(qty>0)){toast('Isi jumlah yang diterima (lebih dari 0)');render();return}
+ delete rcvDraft[rowId];
  const picName=curPic()?curPic().name:(rcvPic.trim()||'Admin Gudang');
  const ordered=Number(row.qty)||0;
  const before=rowRecv(row);
@@ -2918,6 +2923,7 @@ function undoReceivePart(formId,rowId,partId){
  const qty=Number(probe[pi].qty)||0;
  if(master.stock<qty){toast('Gagal batal: stok barang saat ini sudah terpakai');render();return}
  ensureParts(row);
+ delete rcvDraft[rowId];
  const part=row.parts[pi];
  master.stock=r3(master.stock-qty);
  if(part.txId)S.tx=S.tx.filter(t=>t.id!==part.txId);
