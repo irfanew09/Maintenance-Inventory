@@ -264,6 +264,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 27 : Indikator umur Form PR di Proses Request diubah: hijau (0-7 hari), kuning (8-14 hari), merah (lebih dari 14 hari).
+             Fungsi yang diubah: prAgeBadge().
  Update 26 : Penerimaan PARSIAL di Proses Request. Barang yang datang sebagian (jumlah kurang dari pesanan) langsung
              masuk ke stok Daftar Suku Cadang dan Riwayat Barang Masuk, tetapi baris PR tetap terbuka dengan SISA yang
              masih ditunggu. Form PR baru pindah ke Arsip PR setelah semua baris diterima lengkap.
@@ -274,8 +276,8 @@
              - Dashboard (donut Status Request), Arsip PR, dan cetak PDF ikut mendukung kedatangan lebih dari satu kali.
              - Sinkronisasi Firebase menyesuaikan struktur parts[]. Data lama (tanpa parts) tetap terbaca tanpa migrasi.
              Fungsi baru: receiveReqItem(), undoReceivePart(), rowParts(), rowRecv(), rowRemain(), ensureParts(), syncRowReceipt().
-             Fungsi toggleReceiveReqItem() dihapus dan digantikan receiveReqItem(). 
-Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar (dialog yang terbuka saat nama sparepart diklik di Daftar Suku Cadang);
+             Fungsi toggleReceiveReqItem() dihapus dan digantikan receiveReqItem().
+ Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar (dialog yang terbuka saat nama sparepart diklik di Daftar Suku Cadang);
              Admin & Supervisor hanya melihat. Gambar diperkecil (maks 640 px, JPEG) dan disimpan di koleksi terpisah S.images
              ({id: id barang, data: data-URL}) yang ikut tersinkron per record ke Firebase (mims/images/k<id>).
  Update 24 : Ganti Password (akun PIC, tombol di sidebar), kolom Password di Master PIC (lihat/sembunyikan, hanya User), dan Lupa Password di halaman login
@@ -286,10 +288,6 @@ Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar 
              Halaman login: label 'Username (Akun PIC)'; blok 'Akun Uji Coba' dihapus.
  Update 21 : Hak akses diubah. Admin = Daftar Suku Cadang, Request, Proses Request, Masuk, Keluar, Transaksi Terakhir, Stock Opname.
              Supervisor = hak Admin + Master Barang Baru (tanpa Master PIC). User = semua fitur (termasuk Master PIC, Export/Import, edit/hapus master).
- Update 21 : Penerimaan PARSIAL di Proses Request. Barang yang datang sebagian (jumlah < pesanan) langsung masuk ke stok
-             Daftar Suku Cadang + Riwayat Barang Masuk, tetapi baris PR tetap terbuka dengan SISA yang masih ditunggu.
-             Form PR baru pindah ke Arsip PR setelah semua baris lengkap. Tiap kedatangan tercatat di baris (field parts[])
-             dan bisa dibatalkan satu per satu. Data lama (tanpa parts) tetap terbaca. Fungsi: receiveReqItem(), undoReceivePart().
  Update 20b: Akun PIC punya Hak Akses (User / Supervisor / Admin) yang ditentukan akun User saat membuat/mengedit PIC (field role pada Master PIC; default Admin).
  Update 20 : Akun login per PIC. Master PIC kini punya Username + Password (disimpan sebagai hash SHA-256 + salt). PIC yang login
              otomatis tercatat sebagai PIC pada Suku Cadang Masuk/Keluar, Stock Opname, dan Penerimaan di Proses Request
@@ -2618,13 +2616,12 @@ function prAgeDays(f){
  return Math.max(0,Math.floor((b-a)/86400000));
 }
 
-/** Lencana umur Form PR: hijau (< 3 hari), kuning (3 dan 7 hari), merah (> 7 hari). */
+/** Lencana umur Form PR: hijau (0-7 hari), kuning (8-14 hari), merah (> 14 hari). */
 function prAgeBadge(f){
  const d=prAgeDays(f);
- if(d>7)return `<span class="b er">🔴 Sudah ${d} Hari</span>`;
- if(d===7)return `<span class="b wa">Sudah 7 Hari</span>`;
- if(d>=3)return `<span class="b wa">Sudah 3 Hari</span>`;
- return `<span class="b ok">${d} Hari</span>`;
+ if(d>14)return `<span class="b er">🔴 Sudah ${d} Hari</span>`;
+ if(d>=8)return `<span class="b wa">🟡 Sudah ${d} Hari</span>`;
+ return `<span class="b ok">🟢 ${d} Hari</span>`;
 }
 
 /** Tampilan Proses Request: daftar Form PR berjalan (accordion + progres) dan arsip PR dengan pencarian. */
