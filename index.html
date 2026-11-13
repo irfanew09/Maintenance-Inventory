@@ -264,7 +264,18 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
- Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar (dialog yang terbuka saat nama sparepart diklik di Daftar Suku Cadang);
+ Update 26 : Penerimaan PARSIAL di Proses Request. Barang yang datang sebagian (jumlah kurang dari pesanan) langsung
+             masuk ke stok Daftar Suku Cadang dan Riwayat Barang Masuk, tetapi baris PR tetap terbuka dengan SISA yang
+             masih ditunggu. Form PR baru pindah ke Arsip PR setelah semua baris diterima lengkap.
+             - Kolom ceklis diganti: Sudah Diterima, Sisa, Terima Sekarang (isian jumlah) dan tombol "Terima".
+             - Tiap kedatangan tercatat pada baris (field parts[]: jumlah, tanggal, jam, PIC, txId) dan dapat dibatalkan
+               satu per satu lewat tombol "Batal" (stok dikurangi, transaksi masuk dihapus).
+             - Status baris: Belum Diterima / Sebagian / Lengkap. Badge "+N dalam PR" kini menampilkan sisa yang belum datang.
+             - Dashboard (donut Status Request), Arsip PR, dan cetak PDF ikut mendukung kedatangan lebih dari satu kali.
+             - Sinkronisasi Firebase menyesuaikan struktur parts[]. Data lama (tanpa parts) tetap terbaca tanpa migrasi.
+             Fungsi baru: receiveReqItem(), undoReceivePart(), rowParts(), rowRecv(), rowRemain(), ensureParts(), syncRowReceipt().
+             Fungsi toggleReceiveReqItem() dihapus dan digantikan receiveReqItem(). 
+Update 25 : Gambar sparepart. Hanya User yang dapat menambah/ganti/hapus gambar (dialog yang terbuka saat nama sparepart diklik di Daftar Suku Cadang);
              Admin & Supervisor hanya melihat. Gambar diperkecil (maks 640 px, JPEG) dan disimpan di koleksi terpisah S.images
              ({id: id barang, data: data-URL}) yang ikut tersinkron per record ke Firebase (mims/images/k<id>).
  Update 24 : Ganti Password (akun PIC, tombol di sidebar), kolom Password di Master PIC (lihat/sembunyikan, hanya User), dan Lupa Password di halaman login
