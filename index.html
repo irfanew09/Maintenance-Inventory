@@ -264,6 +264,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 29 : Laporan PDF Daftar Suku Cadang (Export Laporan) kini memiliki kolom "No" (nomor urut) di sebelah kiri kolom Kode.
+             Fungsi yang diubah: printInventoryReport(). Export Excel tidak diubah.
  Update 28 : Perbaikan Proses Request: isian "Terima Sekarang" pada item lain tidak lagi kembali ke jumlah awal saat satu item
              diterima (atau saat halaman digambar ulang oleh sinkronisasi). Isian disimpan per baris di rcvDraft{} dan dihapus
              hanya untuk baris yang berhasil diterima / dibatalkan. Fungsi yang diubah: vProc(), receiveReqItem(), undoReceivePart().
@@ -3588,12 +3590,12 @@ function printInventoryReport(w,from,to,hideIdle){
  if(F.cat)fl.push('Kategori: '+F.cat);
  if(F.st)fl.push('Status: '+F.st);
  if(F.q)fl.push('Pencarian: "'+F.q+'"');
- const headers=['Kode','Nama Suku Cadang','Lokasi','Stock Awal','Jumlah Masuk','Jumlah Keluar','Sisa Stock','Satuan'];
- const body=rows.map(r=>'<tr><td>'+esc(r.i.sku)+'</td><td>'+esc(r.i.name)+'</td><td>'+esc(r.i.loc)+'</td><td class="num">'+num(r.opening)+'</td><td class="num">'+num(r.masuk)+'</td><td class="num">'+num(r.keluar)+'</td><td class="num"><b>'+num(r.ending)+'</b></td><td>'+esc(r.i.unit)+'</td></tr>').join('');
+ const headers=['No','Kode','Nama Suku Cadang','Lokasi','Stock Awal','Jumlah Masuk','Jumlah Keluar','Sisa Stock','Satuan'];
+ const body=rows.map((r,n)=>'<tr><td class="c">'+(n+1)+'</td><td>'+esc(r.i.sku)+'</td><td>'+esc(r.i.name)+'</td><td>'+esc(r.i.loc)+'</td><td class="num">'+num(r.opening)+'</td><td class="num">'+num(r.masuk)+'</td><td class="num">'+num(r.keluar)+'</td><td class="num"><b>'+num(r.ending)+'</b></td><td>'+esc(r.i.unit)+'</td></tr>').join('');
  w.document.write(`<!DOCTYPE html><html lang="id"><head><meta charset="utf-8"><title> </title><style>
  @page{size:A4 landscape;margin:0}*{box-sizing:border-box}body{font:12px Arial,sans-serif;color:#202938;margin:0;padding:14mm}
  h1{font-size:19px;margin:0 0 5px}p{font-size:10px;color:#5d6878;margin:0 0 6px}p.per{font-size:13px;color:#202938;font-weight:700;margin:0 0 6px}p.note{margin-bottom:14px;font-style:italic}
- table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd3df;padding:8px 10px;text-align:left}th{background:#eef2f7;font-weight:700}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+ table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd3df;padding:8px 10px;text-align:left}th{background:#eef2f7;font-weight:700}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}td.c,th.c{text-align:center;width:38px}
  thead{display:table-header-group}tr{page-break-inside:avoid}
  tbody tr:nth-child(even){background:#f8fafc}.empty{text-align:center;color:#667085;padding:18px}
  
@@ -3601,7 +3603,7 @@ function printInventoryReport(w,from,to,hideIdle){
  <p class="per">Periode: ${esc(periodLabel(from,to))}</p>
  <p>Dicetak: ${today()} ${wibTime()} WIB &nbsp;|&nbsp; Total: ${rows.length} item${fl.length?' &nbsp;|&nbsp; Filter: '+esc(fl.join(' · ')):''}${hideIdle?' &nbsp;|&nbsp; Barang tanpa pergerakan disembunyikan':''}</p>
  <p class="note">Stock Awal = sisa stok sebelum tanggal mulai periode. Sisa Stock = posisi stok pada akhir periode.</p>
- <table><thead><tr>${headers.map((h,n)=>'<th'+(n>=3&&n<=6?' class="num"':'')+'>'+h+'</th>').join('')}</tr></thead><tbody>${body||'<tr><td class="empty" colspan="8">Tidak ada data yang cocok</td></tr>'}</tbody></table>
+ <table><thead><tr>${headers.map((h,n)=>'<th'+(n===0?' class="c"':(n>=4&&n<=7?' class="num"':''))+'>'+h+'</th>').join('')}</tr></thead><tbody>${body||'<tr><td class="empty" colspan="9">Tidak ada data yang cocok</td></tr>'}</tbody></table>
  <script>window.onload=()=>{window.focus();window.print()}<\/script></body></html>`);
  w.document.close();
 }
