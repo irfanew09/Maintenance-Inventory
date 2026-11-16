@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 31 - Tabel Sparepart Sedang Dipesan di Dashboard (maks. 10 item)
+ Versi dokumen : Update 33 - Kode Spare Part sepenuhnya otomatis (tidak bisa diubah manual)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -240,6 +240,9 @@
  [ ] Dashboard: tabel Sparepart Sedang Dipesan tampil maksimal 10 baris (PR terlama di atas); barang yang sudah lengkap
      diterima hilang dari tabel; klik No. PR membuka Form PR di Proses Request; keterangan "Menampilkan 10 dari N" muncul bila > 10.
  [ ] Tambah barang baru, edit barang, hapus barang.
+ [ ] Edit barang -> ganti Kategori: kolom Kode berubah otomatis sesuai kategori baru; kembali ke kategori asal = kode asli.
+     Tambah barang baru di kategori lama: Kode yang kosong (ditinggalkan barang yang pindah) dipakai lebih dulu.
+ [ ] Kolom Kode di form Tambah/Edit hanya-baca (tidak bisa diketik); kode ganda tidak pernah terbentuk.
  [ ] Input Suku Cadang Masuk dan Keluar; stok berubah; keluar > stok ditolak.
  [ ] Request Sparepart -> Buat Form PR -> Proses Request -> ceklis penerimaan
      -> form pindah ke Arsip -> batal ceklis mengembalikan stok.
@@ -266,6 +269,18 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 33 : Master Barang: Kode Spare Part tidak bisa lagi diubah/diketik manual (kolom Kode hanya-baca di form Tambah dan Edit).
+             saveItem() tidak membaca kolom Kode: kode selalu dihitung otomatis lewat nextCode() (nomor kosong terkecil di kategori),
+             sehingga tidak ada kode ganda walau form terbuka lama atau data berubah dari perangkat lain. Edit tanpa ganti kategori
+             = kode tetap; bila kode lama ternyata bentrok dengan barang lain, otomatis diberi nomor kosong baru. Notifikasi simpan
+             menampilkan kode yang diberikan. Import CSV tidak diubah (mencocokkan per SKU, tidak membuat ganda).
+             Fungsi yang diubah: saveItem(), vForm().
+ Update 32 : Master Barang: (1) saat Edit, mengganti Kategori otomatis mengisi ulang Kode Spare Part sesuai kategori baru
+             (nomor kosong terkecil, bila tidak ada maka nomor terbesar + 1); kembali ke kategori asal memulihkan kode asli.
+             (2) nextCode() kini memakai nomor kosong lebih dulu: kode yang ditinggalkan barang yang pindah kategori (atau barang
+             yang dihapus) dipakai oleh barang baru di kategori itu, bukan lagi selalu maks + 1.
+             (3) Bila kode barang berubah, salinan kode pada Draft Request & Form PR berjalan ikut diperbarui (Arsip PR tidak diubah).
+             Fungsi yang diubah: catChg(), nextCode(c, excludeId), saveItem(), vForm() (label kode mode edit).
  Update 31 : Dashboard: tabel Sparepart Sedang Dipesan dibatasi maksimal 10 item (PR terlama di atas). Bila lebih, tampil keterangan
              "Menampilkan 10 dari N item" dan tautan ke Proses Request. Batas diatur oleh konstanta MAX di dashboardOrderedHtml().
  Update 30 : Dashboard: tabel baru "Sparepart Sedang Dipesan" (di bawah grafik & Peringatan Stok) berisi barang pada Form PR berjalan
@@ -1842,7 +1857,10 @@ function delItem(id){
    Data     : S.items, S.tx.
    Aturan   : kode (sku) unik. Barang baru dengan stok > 0 membuat transaksi "Stok awal" (isInit).
               Mengubah stok saat edit membuat transaksi penyesuaian (isAdj).
-   Kode otomatis: memilih kategori mengisi kode berikutnya (mis. MEK-004) lewat nextCode().
+   Kode otomatis: kolom Kode HANYA-BACA (tidak bisa diketik); saveItem() menghitung kode sendiri, bukan dari isian form.
+              Memilih kategori mengisi kode berikutnya (mis. MEK-004) lewat nextCode(). Nomor yang kosong dipakai lebih
+              dulu (terkecil). Mode edit: mengganti kategori mengisi ulang kode sesuai kategori baru (catChg()); kode lama menjadi
+              kosong dan dipakai barang baru di kategori itu. Kembali ke kategori asal = kode asli dipulihkan.
    Cara ubah: Field baru -> ikuti panduan "Menambah field pada barang" (dokumentasi bagian 8B).
    ========================================================================== */
 
@@ -1854,7 +1872,7 @@ function vForm(){
  const f=(id,l,t,k,x='')=>`<div><label for="f_${id}">${l}</label><input id="f_${id}" type="${t}" value="${v(k)}" ${x}></div>`;
  return `<div class="page-head"><div><h2>${editId?'Edit Master Spare Part':'Registrasi Master Spare Part Baru'}</h2><p class="page-subtitle">${editId?'Perubahan jumlah stok pada menu ini akan otomatis tercatat sebagai transaksi penyesuaian (adjustment).':'Gunakan form ini untuk mendaftarkan kode spare part baru ke dalam sistem.'}${currentUser==='supervisor'?' Supervisor dapat menambahkan barang baru; pengeditan dan penghapusan master tetap khusus User utama.':''}</p></div><div class="page-actions"><button class="btn p" onclick="go('in')">Ke Form Restock (Barang Masuk) →</button></div></div><div class="card form-card"><div class="fm">
  <div class="form-section-title">Identitas Spare Part</div>
- ${f('sku',editId?'Kode Spare Part *':'Kode Spare Part (otomatis)','text','sku',editId?'':'readonly placeholder="Pilih kategori terlebih dahulu"')}${f('name','Nama Spare Part *','text','name','placeholder="Masukkan nama komponen"')}
+ ${f('sku',editId?'Kode Spare Part (otomatis, ikut kategori)':'Kode Spare Part (otomatis)','text','sku','readonly placeholder="Pilih kategori terlebih dahulu"')}${f('name','Nama Spare Part *','text','name','placeholder="Masukkan nama komponen"')}
  <div><label for="f_catsel">Kategori *</label><select id="f_catsel" onchange="catChg()"><option value="">— Pilih kategori —</option>${cats().map(c=>`<option ${i.cat===c?'selected':''}>${esc(c)}</option>`).join('')}<option value="__new">+ Kategori baru…</option></select><input id="f_cat" placeholder="Nama kategori baru" style="display:none;margin-top:8px" oninput="catChg()"></div>
  ${f('sup','Supplier','text','sup','placeholder="Nama supplier (opsional)"')}
  <div class="form-section-title">Lokasi & Parameter Persediaan</div>
@@ -1873,16 +1891,38 @@ function vForm(){
 /** Nilai kategori yang dipilih; bila "kategori baru" ambil dari kolom teks. */
 function catVal(){const s=$('#f_catsel').value;return s==='__new'?$('#f_cat').value.trim():s}
 
-/** Saat kategori diganti: tampilkan/sembunyikan kolom kategori baru dan isi kode otomatis (hanya mode tambah). */
-function catChg(){const s=$('#f_catsel').value;$('#f_cat').style.display=s==='__new'?'':'none';if(!editId)$('#f_sku').value=nextCode(catVal())}
+/**
+ * Saat kategori diganti: tampilkan/sembunyikan kolom kategori baru dan isi kode otomatis.
+ * Mode tambah : kode berikutnya untuk kategori itu.
+ * Mode edit   : kategori diganti -> kode ikut kategori baru (nomor kosong dipakai lebih dulu); kembali ke kategori asal
+ *               (atau kategori dikosongkan) -> kode asli barang dipulihkan. Kode lama yang ditinggalkan menjadi kosong
+ *               dan akan dipakai barang baru di kategori lamanya (lihat nextCode()).
+ */
+function catChg(){
+ const s=$('#f_catsel').value;$('#f_cat').style.display=s==='__new'?'':'none';
+ const c=catVal();
+ if(!editId){$('#f_sku').value=nextCode(c);return}
+ const it=S.items.find(x=>x.id===editId);if(!it)return;
+ $('#f_sku').value=(!c||c===it.cat)?it.sku:nextCode(c,editId);
+}
 
-/** Membuat kode barang berikutnya untuk sebuah kategori: awalan yang paling umum di kategori itu (atau 3 huruf dari nama kategori) + nomor urut 3 digit, contoh MEK-004. */
-function nextCode(c){
+/**
+ * Membuat kode barang berikutnya untuk sebuah kategori: awalan yang paling umum di kategori itu (atau 3 huruf dari nama kategori)
+ * + nomor urut 3 digit, contoh MEK-004. Nomor yang KOSONG (belum terdaftar, mis. karena barangnya pindah kategori atau dihapus)
+ * dipakai lebih dulu, dimulai dari nomor terkecil; bila tidak ada yang kosong, lanjut ke nomor terbesar + 1.
+ * @param c         nama kategori
+ * @param excludeId (opsional) id barang yang sedang diedit; kodenya dianggap belum terpakai
+ */
+function nextCode(c,excludeId){
  if(!c)return'';
- const cnt={};S.items.filter(i=>i.cat===c).forEach(i=>{const p=i.sku.split('-')[0];cnt[p]=(cnt[p]||0)+1});
+ const pool=S.items.filter(i=>i.id!==excludeId);
+ const cnt={};pool.filter(i=>i.cat===c).forEach(i=>{const p=String(i.sku).split('-')[0];cnt[p]=(cnt[p]||0)+1});
  const p=Object.keys(cnt).sort((a,b)=>cnt[b]-cnt[a])[0]||(c.replace(/[^A-Za-z]/g,'').toUpperCase()+'XXX').slice(0,3);
- let m=0;S.items.forEach(i=>{const x=i.sku.match(/^(.*)-(\d+)$/);if(x&&x[1]===p)m=Math.max(m,+x[2])});
- let n=m+1,code;do{code=p+'-'+String(n).padStart(3,'0');n++}while(S.items.some(i=>i.sku===code));return code;
+ const used=new Set();
+ pool.forEach(i=>{const x=String(i.sku).match(/^(.*)-(\d+)$/);if(x&&x[1]===p)used.add(+x[2])});
+ let n=1,code=p+'-001';
+ while(used.has(n)||pool.some(i=>i.sku===code)){n++;code=p+'-'+String(n).padStart(3,'0')}
+ return code;
 }
 
 /**
@@ -1895,25 +1935,40 @@ function saveItem(){
  const oldItem=editId?S.items.find(x=>x.id===editId):null;
  const notifyEl=$('#f_notify');
  const notifyVal=notifyEl?Boolean(notifyEl.checked):(oldItem?oldItem.notify!==false:true);
- const o={sku:g('sku'),name:g('name'),cat:catVal(),loc:g('loc'),unit:g('unit')||'pcs',stock:Math.max(0,parseDec(g('stock'))),min:Math.max(0,parseDec(g('min'))),sup:g('sup'),notify:notifyVal};
+ const cat=catVal();
+ // Kode TIDAK diambil dari isian form (kolom Kode hanya-baca): selalu dihitung otomatis agar tidak ada kode ganda.
+ // Tambah = nomor kosong terkecil di kategori. Edit = kode tetap bila kategori sama (dan tidak bentrok dengan barang lain);
+ // bila kategori diganti, atau kode lama ternyata bentrok, ambil nomor kosong terkecil di kategori itu.
+ const keepSku=Boolean(oldItem&&oldItem.cat===cat&&oldItem.sku&&!S.items.some(i=>i.sku===oldItem.sku&&i.id!==oldItem.id));
+ const sku=!cat?'':(keepSku?oldItem.sku:nextCode(cat,oldItem?oldItem.id:undefined));
+ const o={sku,name:g('name'),cat,loc:g('loc'),unit:g('unit')||'pcs',stock:Math.max(0,parseDec(g('stock'))),min:Math.max(0,parseDec(g('min'))),sup:g('sup'),notify:notifyVal};
  if(!o.sku||!o.name||!o.cat)return toast('Pilih kategori dan isi nama suku cadang');
  if(S.items.some(i=>i.sku===o.sku&&i.id!==editId))return toast('Kode sudah dipakai oleh barang lain');
+ let codeNote='';
  if(editId){
   const existing=S.items.find(i=>i.id===editId);
   if(!existing){editId=null;return toast('Data barang yang akan diedit tidak ditemukan. Muat ulang halaman lalu coba kembali.');}
   const diff=r3(o.stock-(Number(existing.stock)||0));
+  const oldSku=existing.sku;
   Object.assign(existing,o);
+  if(oldSku!==o.sku){
+   codeNote=' · Kode baru: '+o.sku;
+   // Draft Request & Form PR berjalan menyimpan salinan kode; samakan agar tidak menampilkan kode lama
+   // (kode lama kini kosong dan bisa dipakai barang baru). Arsip PR tidak diubah (dokumen historis).
+   [...(S.reqs||[]),...(S.reqForms||[]).flatMap(f=>f.items||[])].forEach(r=>{if(r&&r.itemId===existing.id)r.sku=o.sku});
+  }
   if(diff!==0){
    S.tx.push({id:uid(),date:today(),time:wibTime(),item:existing.id,type:diff>0?'in':'out',qty:r3(Math.abs(diff)),pic:actor(),by:currentUser,isAdj:true,note:'Penyesuaian stok manual (Edit Master)'});
   }
  }else{
   const n={id:uid(),...o,createdAt:new Date().toISOString()};
   S.items.push(n);
+  codeNote=' · Kode: '+n.sku;
   if(n.stock>0){
    S.tx.push({id:uid(),date:today(),time:wibTime(),item:n.id,type:'in',qty:n.stock,pic:actor(),by:currentUser,note:'Stok awal',isInit:true});
   }
  }
- save();toast('Master suku cadang tersimpan');go('list');
+ save();toast('Master suku cadang tersimpan'+codeNote);go('list');
 }
 
 /* ==========================================================================
