@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 11 - Stability & Bug Fix
+ Versi dokumen : Update 31 - Tabel Sparepart Sedang Dipesan di Dashboard (maks. 10 item)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -237,6 +237,8 @@
  [ ] Halaman terbuka tanpa error (buka konsol browser, F12).
  [ ] Login user, supervisor, admin: menu yang tampil sesuai peran.
  [ ] Dashboard: grafik, kartu ringkasan, donut Kondisi Stok & Status Request.
+ [ ] Dashboard: tabel Sparepart Sedang Dipesan tampil maksimal 10 baris (PR terlama di atas); barang yang sudah lengkap
+     diterima hilang dari tabel; klik No. PR membuka Form PR di Proses Request; keterangan "Menampilkan 10 dari N" muncul bila > 10.
  [ ] Tambah barang baru, edit barang, hapus barang.
  [ ] Input Suku Cadang Masuk dan Keluar; stok berubah; keluar > stok ditolak.
  [ ] Request Sparepart -> Buat Form PR -> Proses Request -> ceklis penerimaan
@@ -244,7 +246,7 @@
  [ ] Stock Opname dengan selisih dan tanpa selisih.
  [ ] Master PIC: tambah, edit, nonaktifkan, hapus.
  [ ] Export JSON lalu Import JSON (data dan PIC kembali utuh).
- [ ] Export/Import CSV barang dan PIC; PDF / Excel Daftar Suku Cadang.
+ [ ] Export/Import CSV barang dan PIC; PDF / Excel Daftar Suku Cadang (PDF memiliki kolom No di kiri Kode).
  [ ] Auto Backup: pilih folder, Backup Sekarang, file muncul di folder.
  [ ] Mode gelap dan terang; layar sempit (lebar < 680 px).
 
@@ -264,8 +266,16 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 31 : Dashboard: tabel Sparepart Sedang Dipesan dibatasi maksimal 10 item (PR terlama di atas). Bila lebih, tampil keterangan
+             "Menampilkan 10 dari N item" dan tautan ke Proses Request. Batas diatur oleh konstanta MAX di dashboardOrderedHtml().
+ Update 30 : Dashboard: tabel baru "Sparepart Sedang Dipesan" (di bawah grafik & Peringatan Stok) berisi barang pada Form PR berjalan
+             yang belum diterima lengkap: Kode, Nama, No. PR + Tanggal Pesan, Umur PR, Dipesan, Sudah Datang, Belum Datang, Status.
+             Nomor PR bisa diklik untuk membuka Form PR tersebut di Proses Request. Fungsi baru: orderedPartsRows(),
+             dashboardOrderedHtml(), openProcForm(). Dipanggil dari vDash().
  Update 29 : Laporan PDF Daftar Suku Cadang (Export Laporan) kini memiliki kolom "No" (nomor urut) di sebelah kiri kolom Kode.
-             Fungsi yang diubah: printInventoryReport(). Export Excel tidak diubah.
+             Penomoran mengikuti filter & opsi sembunyikan barang tanpa pergerakan (selalu mulai dari 1); baris "Tidak ada data"
+             colspan 8 -> 9; kelas CSS baru td.c / th.c (rata tengah, lebar 38px). Fungsi yang diubah: printInventoryReport().
+             Export Excel tidak diubah.
  Update 28 : Perbaikan Proses Request: isian "Terima Sekarang" pada item lain tidak lagi kembali ke jumlah awal saat satu item
              diterima (atau saat halaman digambar ulang oleh sinkronisasi). Isian disimpan per baris di rcvDraft{} dan dihapus
              hanya untuk baris yang berhasil diterima / dibatalkan. Fungsi yang diubah: vProc(), receiveReqItem(), undoReceivePart().
@@ -1447,11 +1457,13 @@ function render(){
    Menu     : tab "dash" -> vDash(). Akses: semua peran.
    Isi      : 5 kartu ringkasan (klik = filter di Daftar Suku Cadang), pengingat backup,
               grafik penerimaan vs pemakaian (1 hari / 7 hari / 30 hari), Peringatan Stok,
-              Stok per Kategori, donut Kondisi Stok & Status Request, Transaksi Terakhir,
+              tabel Sparepart Sedang Dipesan (maks. 10 item), Stok per Kategori, donut Kondisi Stok & Status Request, Transaksi Terakhir,
               Barang Paling Sering Dipakai.
    Data     : S.items, S.tx (tanpa isInit/isAdj untuk grafik & analisis), S.reqForms, S.reqArchive, S.meta.
+              Tabel Sparepart Sedang Dipesan = baris Form PR berjalan (S.reqForms) yang belum lengkap diterima.
    Alur     : chartPeriod diubah setChartPeriod() -> render() ulang.
    Cara ubah: Kartu/seksi baru -> tambahkan di template vDash(). Hitungan donut -> dashboardStatusChartsHtml().
+              Tabel Sparepart Sedang Dipesan -> orderedPartsRows() (data) + dashboardOrderedHtml() (tampilan).
    ========================================================================== */
 
 /** Menggambar daftar batang horizontal. @param rows [[label,nilai],...] @param f fungsi format nilai. */
@@ -1588,6 +1600,48 @@ function dashboardStatusChartsHtml(){
  return `<div class="grid two status-chart-grid"><div class="card"><h3>📊 Kondisi Stok</h3>${donut([{label:'Aman',value:safe},{label:'Menipis',value:low},{label:'Habis',value:out}],['#16a34a','#eab308','#dc2626'],total)}<p class="mt" style="margin-top:8px">Berdasarkan jumlah jenis sparepart.</p></div><div class="card"><h3>📋 Status Request</h3>${donut([{label:'Belum diterima',value:waiting},{label:'Diterima sebagian',value:partial},{label:'Selesai',value:completed}],['#f59e0b','#3b82f6','#16a34a'],waiting+partial+completed)}<p class="mt" style="margin-top:8px">Berdasarkan jumlah dokumen request aktif dan arsip selesai.</p></div></div>`;
 }
 
+/** Baris PR berjalan yang belum lengkap diterima (= sparepart yang sedang dipesan), PR terlama di atas. Di-cache per perubahan data. */
+function orderedPartsRows(){
+ return memoBy('ordered','',()=>{
+  const out=[];
+  (Array.isArray(S.reqForms)?S.reqForms:[]).forEach(f=>{
+   if(!f)return;
+   (Array.isArray(f.items)?f.items:[]).forEach(x=>{
+    if(!x||x.received)return;
+    const remain=rowRemain(x);
+    if(remain<=0)return;
+    out.push({f,x,remain,got:rowRecv(x)});
+   });
+  });
+  out.sort((a,b)=>String(a.f.date||'').localeCompare(String(b.f.date||''))||String(a.f.docNo||'').localeCompare(String(b.f.docNo||''),undefined,{numeric:true}));
+  return out;
+ });
+}
+
+/** Buka Proses Request pada tab "Dalam Proses" dengan Form PR tertentu terbuka (dipakai tabel Sparepart Sedang Dipesan di Dashboard). */
+function openProcForm(formId){
+ procTab='active';
+ openFormId=formId;
+ go('proc');
+}
+
+/** Kartu tabel "Sparepart Sedang Dipesan" di Dashboard: semua barang pada Form PR berjalan yang belum diterima lengkap. */
+function dashboardOrderedHtml(){
+ const MAX=10;                                   // Dashboard hanya menampilkan 10 baris teratas (PR terlama); sisanya di Proses Request
+ const all=orderedPartsRows(),rows=all.slice(0,MAX);
+ const prCount=new Set(all.map(r=>r.f.id)).size;
+ const more=all.length>MAX;
+ const partBadge='background:rgba(59,130,246,.15);color:#3b82f6';
+ const head=`<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px"><div><h3 style="margin:0">🛒 Sparepart Sedang Dipesan (${num(all.length)})</h3><small class="mt" style="display:block;margin-top:2px">${all.length?(more?'Menampilkan '+num(MAX)+' dari '+num(all.length)+' item':num(all.length)+' item')+' pada '+num(prCount)+' Form PR yang belum diterima lengkap · PR terlama di atas':'Seluruh barang pada Form PR sudah diterima'}</small></div><button class="btn s" onclick="go('proc')">Lihat Proses Request</button></div>`;
+ if(!all.length)return `<div class="card" style="margin-top:14px">${head}<div class="mt" style="padding:6px 0">Tidak ada sparepart yang sedang dipesan.</div></div>`;
+ const body=rows.map((r,n)=>{
+  const {f,x,remain,got}=r,unit=esc(x.unit||'');
+  const status=got>0?`<span class="b" style="${partBadge}">🔵 Sebagian</span>`:`<span class="b wa">⏳ Belum Diterima</span>`;
+  return `<tr><td class="c">${n+1}</td><td><b>${esc(x.sku)}</b></td><td>${esc(x.name)}${x.note?`<small>${esc(x.note)}</small>`:''}</td><td><button type="button" class="lnk" title="Buka Form PR ini di Proses Request" onclick="openProcForm('${esc(f.id)}')">${esc(f.docNo)}</button><small>Dipesan: ${esc(f.date||'-')}</small></td><td>${prAgeBadge(f)}</td><td class="r">${num(x.qty)} ${unit}</td><td class="r">${num(got)} ${unit}</td><td class="r"><b style="color:var(--wa)">${num(remain)}</b> ${unit}</td><td>${status}</td></tr>`;
+ }).join('');
+ return `<div class="card" style="margin-top:14px">${head}<div class="tw" style="border:1px solid var(--bd)"><table><thead><tr><th class="c" style="width:42px">No</th><th>Kode</th><th>Nama Sparepart</th><th>No. PR / Tanggal Pesan</th><th>Umur PR</th><th class="r">Dipesan</th><th class="r">Sudah Datang</th><th class="r">Belum Datang</th><th>Status</th></tr></thead><tbody>${body}</tbody></table></div>${more?`<div class="mt" style="font-size:12px;margin-top:10px">Menampilkan ${num(MAX)} dari ${num(all.length)} item. <button type="button" class="lnk" onclick="go('proc')">Lihat semua di Proses Request</button></div>`:''}</div>`;
+}
+
 /** Tampilan halaman Dashboard (menyusun semua kartu dan memanggil fungsi di atas). */
 function vDash(){
  const it=S.items,tot=it.reduce((a,i)=>a+i.stock,0);
@@ -1616,6 +1670,7 @@ function vDash(){
   <div class="card"><h3>${chart.title}</h3>${chart.html}</div>
   <div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:6px"><h3 style="margin:0">⚠️ Peringatan Stok (${critAll.length})</h3><div style="display:flex;gap:6px;align-items:center">${mutedCnt>0?`<button class="btn s" title="Kelola di Daftar Suku Cadang" onclick="go('list')">🔕 ${mutedCnt} Notif Nonaktif</button>`:''}${critAll.length?`<button class="btn s" onclick="go('req')">Ke Tab Request →</button>`:''}</div></div>${alert}</div>
  </div>
+ ${dashboardOrderedHtml()}
  <div class="grid"><div class="card"><h3>Stok per Kategori (unit)</h3>${bars(byCat,num)}</div></div>
  ${dashboardStatusChartsHtml()}
  <div class="grid two"><div class="card"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3 style="margin:0">Transaksi Terakhir</h3><button class="btn s" onclick="go('tx')">Lihat Semua</button></div>${rec}</div>
