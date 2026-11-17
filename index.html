@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 35 - Riwayat Stock Opname dikelompokkan per grup (Stock Opname 1, 2, 3, ...)
+ Versi dokumen : Update 36 - Akun PIC Irfan boleh password pendek
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -272,6 +272,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 36 : Password: akun PIC Irfan (nama/username memuat "irfan") boleh memakai password minimal 3 karakter (mis. "123"), lewat pwMin().
+             PIC lain tetap minimal 6 karakter. Berlaku di Master PIC (diatur User) dan dialog Ganti Password.
  Update 35 : Stock Opname: riwayat kini berupa kartu grup "Stock Opname N" (accordion seperti Proses Request). Satu kali Konfirmasi & Simpan
              = satu grup berisi daftar sparepart yang diopname. Record opname baru memuat batchId & batchNo; record lama otomatis
              dikelompokkan per tanggal (nomor terlama = 1) dan diberi cap permanen saat opname berikutnya disimpan.
@@ -1297,7 +1299,7 @@ function openChangePw(){
  const d=document.createElement('div');d.id='pwDlg';d.className='pw-dlg';
  d.innerHTML=`<div class="pw-card" role="dialog" aria-label="Ganti Password"><h3>🔑 Ganti Password</h3><p class="mt" style="margin:0 0 6px">Akun: <b>${esc(cp.username||cp.name)}</b></p>
   <label for="pw_old">Password saat ini</label><input id="pw_old" type="password" autocomplete="current-password">
-  <label for="pw_new">Password baru (min. 6 karakter)</label><input id="pw_new" type="password" autocomplete="new-password">
+  <label for="pw_new">Password baru (min. ${pwMin(cp)} karakter)</label><input id="pw_new" type="password" autocomplete="new-password">
   <label for="pw_new2">Ulangi password baru</label><input id="pw_new2" type="password" autocomplete="new-password" onkeydown="if(event.key==='Enter')saveChangePw()">
   <div id="pw_err" class="pw-err" role="alert"></div>
   <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px"><button class="btn" onclick="closeChangePw()">Batal</button><button class="btn p" onclick="saveChangePw()">Simpan Password</button></div></div>`;
@@ -1306,6 +1308,9 @@ function openChangePw(){
 }
 function closeChangePw(){const d=document.getElementById('pwDlg');if(d)d.remove()}
 
+/** Update 36: panjang minimum password. Akun PIC Irfan (nama/username memuat "irfan") boleh min. 3 karakter (mis. "123"); PIC lain tetap 6. */
+const pwMin=p=>/irfan/i.test(((p&&p.name)||'')+' '+((p&&p.username)||''))?3:6;
+
 /** Memvalidasi password lama, lalu menyimpan password baru (hash + salt baru) untuk PIC yang login. */
 async function saveChangePw(){
  const cp=curPic(),err=$('#pw_err');
@@ -1313,7 +1318,7 @@ async function saveChangePw(){
  if(!cp)return fail('Sesi PIC tidak valid. Silakan login ulang.');
  const o=$('#pw_old').value,n=$('#pw_new').value,n2=$('#pw_new2').value;
  if(!o||!n||!n2)return fail('Semua kolom wajib diisi.');
- if(n.length<6)return fail('Password baru minimal 6 karakter.');
+ if(n.length<pwMin(cp))return fail('Password baru minimal '+pwMin(cp)+' karakter.');
  if(n!==n2)return fail('Ulangi password baru tidak sama.');
  if(n===o)return fail('Password baru harus berbeda dari password saat ini.');
  if(await hashPw(cp.salt||'',o)!==cp.passHash)return fail('Password saat ini salah.');
@@ -3159,8 +3164,9 @@ async function savePic(){
   if(!/^[a-z0-9._-]{3,30}$/.test(uname))return toast('Username 3-30 karakter: huruf kecil, angka, titik, strip, atau underscore (tanpa spasi).');
   if(Object.hasOwn(ACCOUNTS,uname))return toast('Username itu dipakai akun sistem. Gunakan username lain.');
   if((S.pics||[]).some(p=>p.id!==editPicId&&p.username&&String(p.username).toLowerCase()===uname))return toast('Username sudah dipakai PIC lain.');
-  if(!(cur&&cur.passHash)&&pw.length<6)return toast('Password minimal 6 karakter.');
-  if(pw&&pw.length<6)return toast('Password minimal 6 karakter.');
+  const mn=pwMin({name,username:uname});
+  if(!(cur&&cur.passHash)&&pw.length<mn)return toast('Password minimal '+mn+' karakter.');
+  if(pw&&pw.length<mn)return toast('Password minimal '+mn+' karakter.');
  }else if(pw)return toast('Isi Username dulu bila ingin mengatur Password.');
  // Hak akses ditentukan akun User (fungsi ini hanya bisa dijalankan User)
  let role=cur?picRole(cur):'admin';
