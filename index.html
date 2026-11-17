@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 33 - Kode Spare Part sepenuhnya otomatis (tidak bisa diubah manual)
+ Versi dokumen : Update 35 - Riwayat Stock Opname dikelompokkan per grup (Stock Opname 1, 2, 3, ...)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -119,7 +119,7 @@
                            parts: [ { id, qty, date, time, by, txId } ]  <- tiap kedatangan (parsial) } ],
                 completedDate?, completedTime? (terisi saat dipindah ke arsip) }
  opnames[]    { id, date, itemId, sku, name, systemQty, actualQty, diff, pic,
-                note, by }
+                note, by, batchId, batchNo (grup Stock Opname; Update 35) }
  pics[]       { id, name, title (jabatan), active, createdBy }
 
  Status stok dihitung (tidak disimpan): Habis (stock <= 0), Menipis
@@ -242,6 +242,9 @@
  [ ] Tambah barang baru, edit barang, hapus barang.
  [ ] Edit barang -> ganti Kategori: kolom Kode berubah otomatis sesuai kategori baru; kembali ke kategori asal = kode asli.
      Tambah barang baru di kategori lama: Kode yang kosong (ditinggalkan barang yang pindah) dipakai lebih dulu.
+ [ ] Stock Opname: simpan 2 kali opname -> muncul kartu "Stock Opname 1" dan "Stock Opname 2", masing-masing hanya berisi barang opname itu; klik kartu untuk buka/tutup.
+ [ ] Data opname lama tampil terkelompok per tanggal; Hapus Grup menghapus seluruh barang di grup itu (stok tidak berubah).
+ [ ] Riwayat Suku Cadang Keluar: isi filter Catatan "Aska" -> hanya transaksi bercatatan Aska tampil; Export PDF memuat hanya itu + tertulis "Catatan: ...". Kosongkan = semua.
  [ ] Kolom Kode di form Tambah/Edit hanya-baca (tidak bisa diketik); kode ganda tidak pernah terbentuk.
  [ ] Input Suku Cadang Masuk dan Keluar; stok berubah; keluar > stok ditolak.
  [ ] Request Sparepart -> Buat Form PR -> Proses Request -> ceklis penerimaan
@@ -269,6 +272,13 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 35 : Stock Opname: riwayat kini berupa kartu grup "Stock Opname N" (accordion seperti Proses Request). Satu kali Konfirmasi & Simpan
+             = satu grup berisi daftar sparepart yang diopname. Record opname baru memuat batchId & batchNo; record lama otomatis
+             dikelompokkan per tanggal (nomor terlama = 1) dan diberi cap permanen saat opname berikutnya disimpan.
+             Ada tombol Hapus Grup (dua klik, stok tidak dikembalikan) dan Hapus per baris tetap ada. Logika stok/penyesuaian tidak berubah.
+ Update 34 : Riwayat Suku Cadang Masuk/Keluar: tambah filter Catatan (kata kunci, tidak peka huruf besar/kecil, mis. "Line Aska").
+             Berlaku lewat hist() sehingga tabel, jumlah transaksi, dan PDF selalu konsisten; PDF mencantumkan filter Catatan di header.
+             Daftar saran (datalist) diambil dari catatan yang sudah pernah dipakai.
  Update 33 : Master Barang: Kode Spare Part tidak bisa lagi diubah/diketik manual (kolom Kode hanya-baca di form Tambah dan Edit).
              saveItem() tidak membaca kolom Kode: kode selalu dihitung otomatis lewat nextCode() (nomor kosong terkecil di kategori),
              sehingga tidak ada kode ganda walau form terbuka lama atau data berubah dari perangkat lain. Edit tanpa ganti kategori
@@ -1986,7 +1996,7 @@ function saveItem(){
    ========================================================================== */
 
 /** Filter periode riwayat per jenis: {p:"all"|"1"|"3"|"6"|"12"|"c" (bulan / custom), from, to}. */
-const RG={in:{p:'all',from:'',to:''},out:{p:'all',from:'',to:''}};
+const RG={in:{p:'all',from:'',to:'',q:''},out:{p:'all',from:'',to:'',q:''}};
 
 /** Batas jumlah baris riwayat yang ditampilkan (rec = Transaksi Terakhir, in, out); default 100. */
 const LIM={rec:100,in:100,out:100};
@@ -2022,14 +2032,14 @@ function rng(ty){
 
 /** Daftar transaksi suatu jenis dalam rentang RG, terbaru di atas. */
 function hist(ty){
- const[f,t]=rng(ty);
- return S.tx.filter(x=>x.type===ty&&(!f||x.date>=f)&&(!t||x.date<=t)).reverse().sort((a,b)=>(b.date+(b.time||'')).localeCompare(a.date+(a.time||'')));
+ const[f,t]=rng(ty),q=(RG[ty].q||'').trim().toLowerCase();
+ return S.tx.filter(x=>x.type===ty&&(!f||x.date>=f)&&(!t||x.date<=t)&&(!q||String(x.note||'').toLowerCase().includes(q))).reverse().sort((a,b)=>(b.date+(b.time||'')).localeCompare(a.date+(a.time||'')));
 }
 
 /** Toolbar riwayat: pilihan periode, tanggal custom, jumlah data, dan tombol PDF. */
 function hbar(ty){
  const r=RG[ty],n=hist(ty).length,[f,t]=rng(ty);
- return `<div class="tb"><select onchange="setRG('${ty}','p',this.value)">${[['all','Semua periode'],['1','1 Bulan Terakhir'],['3','3 Bulan Terakhir'],['6','6 Bulan Terakhir'],['12','1 Tahun Terakhir'],['c','Atur Tanggal']].map(o=>`<option value="${o[0]}" ${r.p===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>${r.p==='c'?`<span class="mt" style="align-self:center">Dari</span><input type="date" value="${r.from}" onchange="setRG('${ty}','from',this.value)"><span class="mt" style="align-self:center">sampai</span><input type="date" value="${r.to}" onchange="setRG('${ty}','to',this.value)">`:''}<button class="btn p" onclick="expPDF('${ty}')">🖨️ Export PDF</button></div><div class="mt" style="font-size:12px;margin-bottom:6px">${n} transaksi${f||t?' · periode '+(f||'awal')+' s/d '+(t||'sekarang'):''}${n>LIM[ty]?' · tabel menampilkan '+LIM[ty]+' terbaru, PDF memuat semuanya':''}</div>`;
+ return `<div class="tb"><select onchange="setRG('${ty}','p',this.value)">${[['all','Semua periode'],['1','1 Bulan Terakhir'],['3','3 Bulan Terakhir'],['6','6 Bulan Terakhir'],['12','1 Tahun Terakhir'],['c','Atur Tanggal']].map(o=>`<option value="${o[0]}" ${r.p===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select><input list="noteDl_${ty}" placeholder="Filter Catatan (mis. Line Aska)" value="${esc(r.q||'')}" onchange="setRG('${ty}','q',this.value)"><datalist id="noteDl_${ty}">${[...new Set(S.tx.filter(x=>x.type===ty&&x.note).map(x=>x.note))].slice(0,50).map(n=>`<option value="${esc(n)}">`).join('')}</datalist>${r.p==='c'?`<span class="mt" style="align-self:center">Dari</span><input type="date" value="${r.from}" onchange="setRG('${ty}','from',this.value)"><span class="mt" style="align-self:center">sampai</span><input type="date" value="${r.to}" onchange="setRG('${ty}','to',this.value)">`:''}<button class="btn p" onclick="expPDF('${ty}')">🖨️ Export PDF</button></div><div class="mt" style="font-size:12px;margin-bottom:6px">${n} transaksi${f||t?' · periode '+(f||'awal')+' s/d '+(t||'sekarang'):''}${n>LIM[ty]?' · tabel menampilkan '+LIM[ty]+' terbaru, PDF memuat semuanya':''}</div>`;
 }
 
 /** Mengubah filter periode lalu menggambar ulang riwayat saja (tanpa render penuh). */
@@ -2057,7 +2067,7 @@ function expPDF(ty){
  h1{font-size:18px;margin:0 0 4px}p{font-size:11px;color:#5d6878;margin:0 0 14px}
  table{width:100%;border-collapse:collapse}th,td{border:1px solid #cbd3df;padding:7px 9px;text-align:left}th{background:#eef2f7;font-weight:700}td.num{text-align:right;font-variant-numeric:tabular-nums}
  tbody tr:nth-child(even){background:#f8fafc}
- </style></head><body><h1>${title}</h1><p>Periode: ${f||t?(f||'awal')+' s/d '+(t||'sekarang'):'Semua periode'} &nbsp;|&nbsp; Dicetak: ${today()} ${wibTime()} WIB &nbsp;|&nbsp; Total Transaksi: ${H.length}</p>
+ </style></head><body><h1>${title}</h1><p>Periode: ${f||t?(f||'awal')+' s/d '+(t||'sekarang'):'Semua periode'} &nbsp;|&nbsp; ${RG[ty].q?'Catatan: '+esc(RG[ty].q)+' &nbsp;|&nbsp; ':''}Dicetak: ${today()} ${wibTime()} WIB &nbsp;|&nbsp; Total Transaksi: ${H.length}</p>
  <table><thead><tr><th>Tanggal & Jam (WIB)</th><th>Kode</th><th>Nama Suku Cadang</th><th>Jumlah</th><th>${ty==='in'?'PIC Penerima':'PIC Pengambil'}</th><th>Catatan</th></tr></thead><tbody>${rows||'<tr><td colspan="6" style="text-align:center;padding:16px">Tidak ada transaksi pada periode ini</td></tr>'}</tbody></table>
  <script>window.onload=()=>{window.focus();window.print()}<\/script></body></html>`);
  w.document.close();
@@ -3221,7 +3231,7 @@ function deletePic(id){
    --------------------------------------------------------------------------
    Tujuan   : Mencocokkan stok sistem dengan hitungan fisik menggunakan daftar pemeriksaan.
    Menu     : tab "opname" -> vOpname(). Akses: user & admin (supervisor tidak punya menu ini).
-   Data     : OPQ (antrean pemeriksaan sementara), S.opnames (riwayat), S.items (stok), S.tx.
+   Data     : OPQ (antrean pemeriksaan sementara), S.opnames (riwayat; dikelompokkan per batchId oleh opnameGroups()), S.items (stok), S.tx.
    Alur     : pilih barang -> stok sistem tampil otomatis -> isi stok fisik, PIC, keterangan
               -> klik Tambahkan ke Daftar Pemeriksaan (addOpnameToQueue / saveOpname)
               -> periksa seluruh baris di Daftar Pemeriksaan Stock Opname
@@ -3232,21 +3242,97 @@ function deletePic(id){
    Cara ubah: Field/validasi -> addOpnameToQueue() & commitOpnameQueue(). Tampilan -> vOpname().
    ========================================================================== */
 
+/* ===== Update 35: Riwayat Stock Opname dikelompokkan per grup (Stock Opname 1, 2, 3, ...) =====
+   Satu kali "Konfirmasi & Simpan Semua Hasil Opname" = satu grup. Setiap record opname diberi batchId + batchNo.
+   Record lama (tanpa batchId) dikelompokkan per tanggal dan diberi nomor urut dari yang terlama. */
+let openOpnId=null;   // id grup opname yang terbuka (null = grup terbaru, '' = semua tertutup)
+
+/** Mengelompokkan S.opnames menjadi grup [{id,no,date,rows}] terurut dari nomor terbesar (terbaru). */
+function opnameGroups(){
+ const m=new Map();
+ (S.opnames||[]).forEach(o=>{
+  const id=o.batchId||('L'+(o.date||''));
+  if(!m.has(id))m.set(id,{id,no:o.batchNo||0,date:o.date||'',rows:[]});
+  m.get(id).rows.push(o);
+ });
+ const g=[...m.values()];
+ let n=0;
+ g.filter(x=>!x.no).sort((a,b)=>String(a.date).localeCompare(String(b.date))).forEach(x=>{x.no=++n});
+ return g.sort((a,b)=>b.no-a.no);
+}
+
+/** Memberi batchId/batchNo permanen pada record lama agar nomor grup tidak bergeser. */
+function stampLegacyOpnames(){
+ opnameGroups().forEach(g=>g.rows.forEach(o=>{if(!o.batchId){o.batchId=g.id;o.batchNo=g.no}}));
+}
+
+/** HTML daftar grup riwayat opname (accordion, mengikuti gaya Proses Request). */
+function opnameGroupsHtml(){
+ const gs=opnameGroups();
+ if(!gs.length)return '<div class="card mt" style="text-align:center;padding:20px">Belum ada riwayat stock opname.</div>';
+ const openId=openOpnId===null?gs[0].id:openOpnId;
+ return gs.map(g=>{
+  const isOpen=openId===g.id,diffN=g.rows.filter(o=>o.diff!==0).length;
+  const pics=[...new Set(g.rows.map(o=>o.pic).filter(Boolean))].join(', ')||'-';
+  const rows=isOpen?g.rows.map((o,i)=>`<tr>
+   <td class="c">${i+1}</td>
+   <td>${esc(o.sku)} · ${esc(o.name)}</td>
+   <td class="r">${num(o.systemQty)}</td>
+   <td class="r">${num(o.actualQty)}</td>
+   <td class="r"><b style="color:${o.diff<0?'var(--er)':'var(--ok)'}">${o.diff>0?'+':''}${num(o.diff)}</b></td>
+   <td>${esc(o.pic||'-')}${o.picTitle?`<small>${esc(o.picTitle)}</small>`:''}</td>
+   <td>${esc(o.note||'-')}</td>
+   <td><button class="btn s d" onclick="delOpnameRecord('${o.id}')">${pend==='opn_'+o.id?'Yakin Hapus?':'Hapus'}</button></td>
+  </tr>`).join(''):'';
+  return `<div class="card pr-card ${isOpen?'open':''}">
+   <div class="pr-head" onclick="toggleOpnameGroup('${esc(g.id)}')">
+    <div>
+     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <b style="font-size:15px;color:var(--ac)">🧮 Stock Opname ${g.no}</b>
+      <span class="b ok">${g.rows.length} Barang</span>${diffN?`<span class="b wa">${diffN} Selisih</span>`:'<span class="b ok">Tanpa Selisih</span>'}
+     </div>
+     <div class="mt" style="font-size:12px;margin-top:3px">Tanggal: ${esc(g.date)} &nbsp;|&nbsp; PIC: ${esc(pics)} &nbsp;|&nbsp; Klik untuk ${isOpen?'menyembunyikan':'melihat'} daftar sparepart</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+     <button class="btn s d" onclick="delOpnameGroup('${esc(g.id)}',event)" title="Hapus seluruh riwayat grup ini (stok tidak berubah)">${pend==='opg_'+g.id?'Yakin Hapus Grup?':'Hapus Grup'}</button>
+     <span style="font-size:14px;color:var(--mt);padding:0 4px">${isOpen?'▲':'▼'}</span>
+    </div>
+   </div>
+   ${isOpen?`<div class="pr-body"><div class="tw" style="background:var(--sf);border:1px solid var(--bd)"><table><thead><tr><th class="c" style="width:42px">No</th><th>Barang</th><th class="r">Stok Sistem</th><th class="r">Stok Fisik</th><th class="r">Selisih</th><th>PIC</th><th>Keterangan</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`:''}
+  </div>`;
+ }).join('');
+}
+
+/** Buka/tutup satu grup riwayat opname. */
+function toggleOpnameGroup(id){
+ const cur=openOpnId===null?(opnameGroups()[0]||{}).id:openOpnId;
+ openOpnId=(cur===id)?'':id;
+ render();
+}
+
+/** Hapus seluruh riwayat satu grup opname (dua klik). Stok TIDAK dikembalikan, sama seperti hapus per baris. */
+function delOpnameGroup(id,ev){
+ if(ev)ev.stopPropagation();
+ if(pend!=='opg_'+id){
+  pend='opg_'+id;
+  render();
+  setTimeout(()=>{if(pend==='opg_'+id){pend=null;if(V==='opname')render()}},3000);
+  return;
+ }
+ pend=null;
+ const ids=new Set(opnameGroups().filter(g=>g.id===id).flatMap(g=>g.rows.map(o=>o.id)));
+ S.opnames=(S.opnames||[]).filter(o=>!ids.has(o.id));
+ save();
+ toast('Riwayat grup Stock Opname berhasil dihapus');
+ render();
+}
+
 /** Daftar pemeriksaan stock opname sementara; stok belum berubah sampai tombol konfirmasi ditekan. */
 let OPQ=[];
 
 /** Tampilan form Stock Opname, Daftar Pemeriksaan Stock Opname, dan tabel riwayat opname (30 terbaru). */
 function vOpname(){
- const history=(S.opnames||[]).slice().reverse().slice(0,30).map(o=>`<tr>
-  <td>${esc(o.date)}</td>
-  <td>${esc(o.sku)} · ${esc(o.name)}</td>
-  <td class="r">${num(o.systemQty)}</td>
-  <td class="r">${num(o.actualQty)}</td>
-  <td class="r"><b style="color:${o.diff===0?'var(--ok)':o.diff>0?'var(--ok)':'var(--er)'}">${o.diff>0?'+':''}${num(o.diff)}</b></td>
-  <td>${esc(o.pic||'-')}${o.picTitle?`<small>${esc(o.picTitle)}</small>`:''}</td>
-  <td>${esc(o.note||'-')}</td>
-  <td><button class="btn s d" onclick="delOpnameRecord('${o.id}')">${pend==='opn_'+o.id?'Yakin Hapus?':'Hapus'}</button></td>
- </tr>`).join('');
+ const history=opnameGroupsHtml();
  return `<div class="page-head"><div><h2>🧮 Stock Opname</h2><p class="page-subtitle">Tambahkan hasil hitung fisik beberapa sparepart ke daftar pemeriksaan, periksa kembali selisihnya, lalu konfirmasi untuk menyesuaikan stok sekaligus.</p></div><div class="page-actions"><button class="btn p" onclick="printStockOpnameSheet()">📄 Cetak Form Perbandingan PDF</button></div></div>
  <div class="card"><div class="fm">
   <div><label>Barang *</label><input id="op_item" list="op_dl" placeholder="Cari SKU / nama barang" autocomplete="off" onchange="opnameInfo()" oninput="opnameInfo()"><datalist id="op_dl">${S.items.map(i=>`<option value="${esc(i.sku+' · '+i.name)}">Stok Sistem: ${num(i.stock)} ${esc(i.unit)}</option>`).join('')}</datalist><div id="op_hint" class="mt" style="font-size:12px;margin-top:4px">Pilih barang untuk melihat stok sistem.</div></div>
@@ -3257,7 +3343,7 @@ function vOpname(){
  </div>
  <div style="margin-top:16px"><button class="btn p" onclick="addOpnameToQueue()">＋ Tambahkan ke Daftar Pemeriksaan Opname</button></div></div>
  <div id="opQueue" style="margin-top:14px">${opnameQueueHtml()}</div>
- <div class="card table-card" style="margin-top:14px"><div style="padding:14px 16px"><h3 style="margin:0">Riwayat Stock Opname</h3></div><div class="tw"><table><thead><tr><th>Tanggal</th><th>Barang</th><th class="r">Stok Sistem</th><th class="r">Stok Fisik</th><th class="r">Selisih</th><th>PIC</th><th>Keterangan</th><th>Aksi</th></tr></thead><tbody>${history||'<tr><td colspan="8" class="mt" style="text-align:center;padding:20px">Belum ada riwayat stock opname.</td></tr>'}</tbody></table></div></div>`;
+ <div style="margin-top:14px"><h3 style="margin:0 0 8px">Riwayat Stock Opname per Grup</h3>${history}</div>`;
 }
 
 /** Membuat tampilan daftar pemeriksaan Stock Opname. Menambahkan barang ke daftar belum mengubah stok. */
@@ -3390,6 +3476,8 @@ function commitOpnameQueue(){
   if(!String(x.pic||'').trim())return toast(`PIC opname untuk "${it.name}" belum diisi.`);
  }
  S.opnames=S.opnames||[];
+ stampLegacyOpnames();
+ const batchId=uid(),batchNo=Math.max(0,...opnameGroups().map(g=>g.no))+1;
  let adjCount=0;
  q.forEach(x=>{
   const it=findById(x.itemId);
@@ -3398,7 +3486,7 @@ function commitOpnameQueue(){
   const diff=r3(actual-before);
   const rec={
    id:uid(),date:x.date||today(),itemId:it.id,sku:it.sku,name:it.name,
-   systemQty:before,actualQty:actual,diff,pic:x.pic.trim(),picTitle:x.picTitle||'',note:x.note||'',by:x.by||currentUser
+   systemQty:before,actualQty:actual,diff,batchId,batchNo,pic:x.pic.trim(),picTitle:x.picTitle||'',note:x.note||'',by:x.by||currentUser
   };
   S.opnames.push(rec);
   if(diff!==0){
@@ -3413,8 +3501,9 @@ function commitOpnameQueue(){
  });
  const totalCount=q.length;
  OPQ=[];
+ openOpnId=batchId;
  save();
- toast(`${totalCount} hasil stock opname berhasil dikonfirmasi & disimpan (${adjCount} penyesuaian stok).`);
+ toast(`Stock Opname ${batchNo}: ${totalCount} barang berhasil disimpan (${adjCount} penyesuaian stok).`);
  go('opname');
 }
 
