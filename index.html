@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 36 - Akun PIC Irfan boleh password pendek
+ Versi dokumen : Update 37 - Hak akses Admin dipersempit (Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -150,8 +150,11 @@
    supervisor  Pengawas: hak Admin (input masuk/keluar, request, proses request,
                opname, transaksi terakhir) + menambah Master Barang BARU.
                Tidak punya Master PIC, Export/Import, edit/hapus master.
-   admin       Operator gudang: input masuk/keluar, request, proses request,
-               opname. Tidak punya menu Master dan Export/Import.
+   admin       Operator gudang (Update 37): HANYA Daftar Suku Cadang (tombol Keluar saja),
+               Suku Cadang Keluar, dan Transaksi Terakhir. Tidak punya Dashboard,
+               Request, Proses Request, Suku Cadang Masuk, Stock Opname, Master,
+               maupun Export/Import. Halaman awal setelah login = Daftar Suku Cadang
+               (lihat homeTab()). Berlaku juga untuk akun PIC ber-hak akses Admin.
 
  Penjagaan ada di dua lapis: (1) menu disaring lewat ACCOUNTS[role].tabs dan
  go(); (2) tiap fungsi aksi mengecek currentUser sendiri dan memanggil toast
@@ -236,6 +239,8 @@
 ==========================================================================
  [ ] Halaman terbuka tanpa error (buka konsol browser, F12).
  [ ] Login user, supervisor, admin: menu yang tampil sesuai peran.
+ [ ] Login admin (atau akun PIC ber-hak Admin): sidebar hanya 3 menu (Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir);
+     langsung masuk Daftar Suku Cadang (bukan Dashboard); tabel hanya berisi tombol Keluar; muat ulang halaman (F5) tetap masuk halaman yang sama.
  [ ] Dashboard: grafik, kartu ringkasan, donut Kondisi Stok & Status Request.
  [ ] Dashboard: tabel Sparepart Sedang Dipesan tampil maksimal 10 baris (PR terlama di atas); barang yang sudah lengkap
      diterima hilang dari tabel; klik No. PR membuka Form PR di Proses Request; keterangan "Menampilkan 10 dari N" muncul bila > 10.
@@ -272,6 +277,10 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 37 : Hak akses Admin dipersempit: ACCOUNTS.admin.tabs = ['list','out','tx'] (Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir).
+             Dashboard, Request, Proses Request, Suku Cadang Masuk, dan Stock Opname tidak lagi tersedia untuk Admin / PIC ber-hak Admin.
+             Fungsi baru homeTab() (menu awal sesuai peran) dipakai di doLogin(), boot ([21]), dan render() (jaring pengaman bila tab di luar hak).
+             drawTable(): tombol Pesan / Masuk / Keluar hanya tampil bila peran memiliki menu req / in / out. User & Supervisor tidak berubah.
  Update 36 : Password: akun PIC Irfan (nama/username memuat "irfan") boleh memakai password minimal 3 karakter (mis. "123"), lewat pwMin().
              PIC lain tetap minimal 6 karakter. Berlaku di Master PIC (diatur User) dan dialog Ganti Password.
  Update 35 : Stock Opname: riwayat kini berupa kartu grup "Stock Opname N" (accordion seperti Proses Request). Satu kali Konfirmasi & Simpan
@@ -892,8 +901,14 @@ const skuCollator=new Intl.Collator('id',{numeric:true,sensitivity:'base'});
 const ACCOUNTS={
  user:{name:'User (Kendali Penuh)',role:'user',tabs:['dash','list','req','proc','masters','master','in','out','tx','opname','data','pic']},
  supervisor:{name:'Supervisor (Pengawas)',role:'supervisor',tabs:['dash','list','req','proc','in','out','tx','opname','masters','master']},
- admin:{name:'Admin (Operator Gudang)',role:'admin',tabs:['dash','list','req','proc','in','out','tx','opname']}
+ admin:{name:'Admin (Operator Gudang)',role:'admin',tabs:['list','out','tx']}   // Update 37: Admin hanya Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir
 };
+
+/** Menu pertama yang boleh dibuka peran saat ini: Dashboard bila diizinkan, selain itu menu pertama di ACCOUNTS[peran].tabs (Admin -> Daftar Suku Cadang). Dipakai setelah login, pemulihan sesi, dan boot. */
+function homeTab(){
+ const t=(ACCOUNTS[currentUser]||{}).tabs||[];
+ return t.includes('dash')?'dash':(t[0]||'list');
+}
 
 /** Daftar menu sidebar: [id, label]. Urutan di sini = urutan tampil. "masters" adalah hub menu Master. */
 const TABS=[
@@ -1245,7 +1260,7 @@ async function doLogin(){
  currentUsername=picId?((S.pics||[]).find(x=>x.id===picId)||{}).username||u:u;
  try{sessionStorage.setItem('wh_session_v1',sess)}catch(e){/* Login tetap dapat berjalan tanpa penyimpanan sesi */}
  const acc=ACCOUNTS[role];
- if(!acc.tabs.includes(V))V='dash';
+ if(!acc.tabs.includes(V))V=homeTab();
  try{
   $('#currentUserBadge').innerHTML=`<span>👤 ${esc(label)}</span>`;
   renderNav();
@@ -1459,6 +1474,7 @@ function quickReq(id){
  */
 function render(){
  if(!currentUser)return;
+ if(!ACCOUNTS[currentUser].tabs.includes(V))V=homeTab();   // jaring pengaman: peran tidak boleh melihat tab di luar haknya
  const html=({
   dash:vDash,
   masters:vMastersHome,
@@ -1743,6 +1759,7 @@ function filteredInventoryItems(){
 
 /** Mengisi isi tabel (#tb) dan penghitung (#cnt) sesuai filter; tombol aksi disesuaikan peran. */
 function drawTable(){
+ const canTab=t=>ACCOUNTS[currentUser].tabs.includes(t);   // tombol aksi hanya tampil bila peran punya menu terkait
  let r=filteredInventoryItems();
  const hasImg=new Set((S.images||[]).map(x=>x.id));
  $('#tb').innerHTML=r.map(i=>{
@@ -1755,9 +1772,9 @@ function drawTable(){
    </label>
   </td>
   <td><div class="act-group">
-   <button class="btn s p" title="Pesan / Request Sparepart" onclick="quickReq('${i.id}')">🛒 Pesan</button>
-   <button class="btn s ok" title="Catat Barang Masuk" onclick="quickTx('${i.id}','in')">＋ Masuk</button>
-   <button class="btn s d" title="Catat Barang Keluar" onclick="quickTx('${i.id}','out')" ${i.stock<=0?'disabled style="opacity:.4;cursor:not-allowed"':''}>－ Keluar</button>
+   ${canTab('req')?`<button class="btn s p" title="Pesan / Request Sparepart" onclick="quickReq('${i.id}')">🛒 Pesan</button>`:''}
+   ${canTab('in')?`<button class="btn s ok" title="Catat Barang Masuk" onclick="quickTx('${i.id}','in')">＋ Masuk</button>`:''}
+   ${canTab('out')?`<button class="btn s d" title="Catat Barang Keluar" onclick="quickTx('${i.id}','out')" ${i.stock<=0?'disabled style="opacity:.4;cursor:not-allowed"':''}>－ Keluar</button>`:''}
    ${currentUser==='user'?`<button class="btn s" onclick="edit('${i.id}')">Edit</button>
    <button class="btn s d" onclick="delItem('${i.id}')">${pend===i.id?'Yakin?':'Hapus'}</button>`:''}
   </div></td></tr>`;
@@ -4209,7 +4226,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  qLoad();
  try{abInit()}catch(e){}
  checkSession();
- if(currentUser){renderNav();go('dash');}
+ if(currentUser){renderNav();go(homeTab());}
  authUi();try{window.mimsPresenceSync&&window.mimsPresenceSync()}catch(e){}
  window.__mimsDataReady=true;   // data lokal siap -> mulai sinkronisasi Firebase ([22])
  try{window.mimsFbStart&&window.mimsFbStart()}catch(e){console.error('[MIMS] Firebase:',e)}
