@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 38 - Kata sandi semua akun = 123 (fitur Ganti Password tetap ada)
+ Versi dokumen : Update 39 - Cek duplikat nama komponen (Master Barang & kartu cek duplikat)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -277,6 +277,9 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 39 : Cek duplikat nama komponen. normNama() membuang tanda baca & spasi lalu membandingkan huruf kecil ("Bearing - 6204" = "bearing 6204").
+             Simpan Master Barang menolak nama yang sama dengan barang lain. Kartu "Cek Duplikat Komponen" di menu Master menampilkan
+             data lama yang sudah ganda (User & Supervisor). Tidak ada penggabungan otomatis; kelompok diselesaikan manual.
  Update 38 : Kata sandi semua akun = 123. Akun umum user/supervisor/admin tetap 123. Akun PIC di-reset ke 123 sekali saat dibuka
              (penanda pwV:1 per PIC disimpan di data dan ikut tersinkron, sehingga tidak diulang). PIC baru tanpa password otomatis 123.
              Fitur Ganti Password dan Lupa Password tetap tersedia. Panjang minimum password kini 3 karakter untuk semua akun (pwMin).
@@ -1967,6 +1970,17 @@ function nextCode(c,excludeId){
  * Validasi lalu menyimpan barang baru / perubahan. Menolak kode ganda; mencatat transaksi stok awal atau penyesuaian.
  * Setelah sukses pindah ke Daftar Suku Cadang.
  */
+/** Update 39: kunci nama untuk pembanding duplikat (huruf kecil, tanpa tanda baca & spasi). "Bearing - 6204" == "bearing 6204". */
+function normNama(s){return String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,'')}
+/** Kelompok barang yang namanya sama setelah dinormalisasi (hanya kelompok berisi lebih dari satu barang). */
+function dupGroups(){const m=new Map();S.items.forEach(i=>{const k=normNama(i.name);if(!k)return;if(!m.has(k))m.set(k,[]);m.get(k).push(i)});return [...m.values()].filter(g=>g.length>1)}
+/** Kartu "Cek Duplikat Komponen" di menu Master (User & Supervisor). */
+function dupCardHtml(){
+ if(!['user','supervisor'].includes(currentUser))return '';
+ const gs=dupGroups();
+ const body=gs.length?gs.map(g=>`<div class="row"><span><b>${esc(g[0].name)}</b><small class="mt">${g.map(i=>`<button type="button" class="lnk" onclick="openItemDlg('${i.id}')">${esc(i.sku)} · ${esc(i.name)}</button>`).join(' · ')}</small></span></div>`).join(''):'<p class="mt">Tidak ada komponen ganda terdeteksi.</p>';
+ return `<div class="card" style="margin-top:14px"><h3>⚠️ Cek Duplikat Komponen (${gs.length} kelompok)</h3><p class="mt">Barang berikut namanya sama setelah tanda baca dan spasi diabaikan. Gabungkan secara manual dengan menghapus salah satunya setelah stok dan riwayatnya dipastikan.</p>${body}</div>`;
+}
 function saveItem(){
  if(currentUser!=='user'&&!(currentUser==='supervisor'&&!editId))return toast('Akses ditolak! Supervisor hanya dapat menambahkan master barang baru, bukan mengubah barang yang sudah ada.');
  const g=id=>{const el=$('#f_'+id);return el?el.value.trim():''};
@@ -1982,6 +1996,8 @@ function saveItem(){
  const o={sku,name:g('name'),cat,loc:g('loc'),unit:g('unit')||'pcs',stock:Math.max(0,parseDec(g('stock'))),min:Math.max(0,parseDec(g('min'))),sup:g('sup'),notify:notifyVal};
  if(!o.sku||!o.name||!o.cat)return toast('Pilih kategori dan isi nama suku cadang');
  if(S.items.some(i=>i.sku===o.sku&&i.id!==editId))return toast('Kode sudah dipakai oleh barang lain');
+ const dupNm=S.items.find(i=>i.id!==editId&&normNama(i.name)&&normNama(i.name)===normNama(o.name));
+ if(dupNm)return toast('Nama mirip dengan "'+dupNm.name+'" (kode '+dupNm.sku+'). Gunakan barang yang sudah ada.');
  let codeNote='';
  if(editId){
   const existing=S.items.find(i=>i.id===editId);
@@ -3138,7 +3154,7 @@ function delArchForm(formId,ev){
 /** Halaman hub menu Master (kartu menuju Master PIC dan Master Barang Baru). */
 function vMastersHome(){
  if(!['user','supervisor'].includes(currentUser))return `<div class="card">Akses Master hanya untuk User dan Supervisor.</div>`;
- return `<div class="page-head"><div><h2>📁 Master</h2><p class="page-subtitle">Pilih data master yang ingin dikelola.</p></div></div><div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">${currentUser==='user'?`<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('pic')"><h3>👥 Master PIC</h3><p class="mt">Kelola akun, jabatan, dan hak akses PIC.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master PIC →</span></button>`:''}<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('master')"><h3>🆕 Master Barang Baru</h3><p class="mt">Tambah data master sparepart atau barang baru.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master Barang Baru →</span></button></div>`;
+ return `<div class="page-head"><div><h2>📁 Master</h2><p class="page-subtitle">Pilih data master yang ingin dikelola.</p></div></div><div class="grid-2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px">${currentUser==='user'?`<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('pic')"><h3>👥 Master PIC</h3><p class="mt">Kelola akun, jabatan, dan hak akses PIC.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master PIC →</span></button>`:''}<button class="card" style="text-align:left;padding:24px;cursor:pointer" onclick="go('master')"><h3>🆕 Master Barang Baru</h3><p class="mt">Tambah data master sparepart atau barang baru.</p><span class="btn p" style="display:inline-block;margin-top:12px">Buka Master Barang Baru →</span></button></div>${dupCardHtml()}`;
 }
 
 /** Tampilan Master PIC: form tambah/edit dan tabel daftar PIC. */
