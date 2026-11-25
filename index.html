@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 37 - Hak akses Admin dipersempit (Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir)
+ Versi dokumen : Update 38 - Kata sandi semua akun = 123 (fitur Ganti Password tetap ada)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -277,6 +277,9 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 38 : Kata sandi semua akun = 123. Akun umum user/supervisor/admin tetap 123. Akun PIC di-reset ke 123 sekali saat dibuka
+             (penanda pwV:1 per PIC disimpan di data dan ikut tersinkron, sehingga tidak diulang). PIC baru tanpa password otomatis 123.
+             Fitur Ganti Password dan Lupa Password tetap tersedia. Panjang minimum password kini 3 karakter untuk semua akun (pwMin).
  Update 37 : Hak akses Admin dipersempit: ACCOUNTS.admin.tabs = ['list','out','tx'] (Daftar Suku Cadang, Suku Cadang Keluar, Transaksi Terakhir).
              Dashboard, Request, Proses Request, Suku Cadang Masuk, dan Stock Opname tidak lagi tersedia untuk Admin / PIC ber-hak Admin.
              Fungsi baru homeTab() (menu awal sesuai peran) dipakai di doLogin(), boot ([21]), dan render() (jaring pengaman bila tab di luar hak).
@@ -1049,6 +1052,9 @@ async function load(){
     S=saved;
     S.items.forEach(i=>{if(i&&'price' in i)delete i.price});   // fitur harga dihapus (Update 22)
     if(!S.pics.length){const old=[...new Set((S.tx||[]).filter(t=>t.type==='out'&&t.pic).map(t=>t.pic))];S.pics=old.map((name,i)=>({id:'PIC-'+(i+1),name,title:'Jabatan belum diisi',active:true,createdBy:'migrasi'}));}
+    // Update 38: kata sandi awal semua akun PIC = 123 (sekali per PIC; penanda pwV:1 ikut tersimpan & tersinkron)
+    {let ch=false;for(const p of S.pics){if(p&&p.username&&p.passHash&&p.pwV!==1){const salt=newSalt();p.salt=salt;p.passHash=await hashPw(salt,'123');p.pw='123';p.pwV=1;ch=true}}
+     if(ch)try{save()}catch(e){}}
     dataVer++;
     if(fromLegacy){
      await dataPut(JSON.stringify(S))
@@ -1323,8 +1329,8 @@ function openChangePw(){
 }
 function closeChangePw(){const d=document.getElementById('pwDlg');if(d)d.remove()}
 
-/** Update 36: panjang minimum password. Akun PIC Irfan (nama/username memuat "irfan") boleh min. 3 karakter (mis. "123"); PIC lain tetap 6. */
-const pwMin=p=>/irfan/i.test(((p&&p.name)||'')+' '+((p&&p.username)||''))?3:6;
+/** Update 38: panjang minimum password semua akun = 3 karakter (kata sandi awal "123"). */
+const pwMin=p=>3;
 
 /** Memvalidasi password lama, lalu menyimpan password baru (hash + salt baru) untuk PIC yang login. */
 async function saveChangePw(){
@@ -1340,7 +1346,7 @@ async function saveChangePw(){
  const p=S.pics.find(x=>x.id===cp.id);
  if(!p)return fail('Data PIC tidak ditemukan.');
  const salt=newSalt();
- p.salt=salt;p.passHash=await hashPw(salt,n);p.pw=n;
+ p.salt=salt;p.passHash=await hashPw(salt,n);p.pw=n;p.pwV=1;
  save();closeChangePw();toast('Password berhasil diganti.');
 }
 
@@ -3139,7 +3145,7 @@ function vMastersHome(){
 function vPicMaster(){
  if(currentUser!=='user')return `<div class="card">Akses Master PIC hanya untuk User.</div>`;
  const rows=(S.pics||[]).map(p=>`<tr><td><b>${esc(p.name)}</b></td><td>${esc(p.title||'-')}</td><td>${p.username&&p.passHash?esc(p.username):'<span class="mt">Belum ada akun</span>'}</td><td>${p.username&&p.passHash?(p.pw?`<code style="user-select:all">${picPwShown.has(p.id)?esc(p.pw):'••••••'}</code> <button class="btn s" title="Lihat / sembunyikan password" onclick="togglePicPw('${p.id}')">${picPwShown.has(p.id)?'🙈':'👁'}</button>`:'<span class="mt">Belum tersimpan (atur ulang)</span>'):'-'}</td><td>${p.username&&p.passHash?'<span class="b '+(picRole(p)==='user'?'er':picRole(p)==='supervisor'?'wa':'ok')+'">'+roleLabel(picRole(p))+'</span>':'-'}</td><td>${p.active===false?'<span class="b er">Nonaktif</span>':'<span class="b ok">Aktif</span>'}</td><td><button class="btn s" onclick="editPic('${p.id}')">Edit</button> <button class="btn s ${p.active===false?'p':'d'}" onclick="togglePic('${p.id}')">${p.active===false?'Aktifkan':'Nonaktifkan'}</button> <button class="btn s d" onclick="deletePic('${p.id}')">${pend==='picdel_'+p.id?'Yakin Hapus?':'Hapus'}</button></td></tr>`).join('')||'<tr><td colspan="7" class="mt">Belum ada PIC. Tambahkan PIC melalui form.</td></tr>';
- return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div><div><label>Username Login</label><input id="pic_user" placeholder="Contoh: andi" autocomplete="off"></div><div><label id="pic_pass_lbl">Password Login</label><input id="pic_pass" type="password" placeholder="Min. 6 karakter" autocomplete="new-password"></div><div><label>Hak Akses (Authority)</label><select id="pic_role"><option value="admin">Admin (Operator Gudang)</option><option value="supervisor">Supervisor (Pengawas)</option><option value="user">User (Kendali Penuh)</option></select></div></div><p class="mt" style="margin-top:6px">Isi Username + Password agar PIC bisa login sendiri. Password dapat dilihat akun User pada tabel di bawah. Saat edit, kosongkan Password bila tidak ingin mengubahnya. PIC yang login otomatis tercatat pada transaksi masuk/keluar dan stock opname.</p><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Username</th><th>Password</th><th>Hak Akses</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+ return `<div class="page-head"><div><h2>👥 Master PIC</h2><p class="page-subtitle">Kelola daftar nama dan jabatan PIC yang dapat dipilih saat transaksi barang keluar.</p></div></div><div class="card form-card"><h3 id="picFormTitle">Tambah PIC Baru</h3><div class="fm"><div><label>Nama PIC *</label><input id="pic_name" placeholder="Nama lengkap PIC"></div><div><label>Jabatan *</label><input id="pic_title" placeholder="Contoh: Teknisi Mekanik"></div><div><label>Username Login</label><input id="pic_user" placeholder="Contoh: andi" autocomplete="off"></div><div><label id="pic_pass_lbl">Password Login</label><input id="pic_pass" type="password" placeholder="Min. 3 karakter (awal: 123)" autocomplete="new-password"></div><div><label>Hak Akses (Authority)</label><select id="pic_role"><option value="admin">Admin (Operator Gudang)</option><option value="supervisor">Supervisor (Pengawas)</option><option value="user">User (Kendali Penuh)</option></select></div></div><p class="mt" style="margin-top:6px">Isi Username + Password agar PIC bisa login sendiri. Password dapat dilihat akun User pada tabel di bawah. Saat edit, kosongkan Password bila tidak ingin mengubahnya. Bila Password dikosongkan saat membuat akun baru, password awalnya otomatis 123. PIC yang login otomatis tercatat pada transaksi masuk/keluar dan stock opname.</p><div class="form-actions"><button class="btn p" onclick="savePic()">Simpan PIC</button><button class="btn" onclick="resetPicForm()">Batal / Reset</button></div><p class="mt">Menu ini hanya tersedia untuk akun User.</p></div><div class="card table-card" style="margin-top:14px"><h3>Daftar PIC</h3><div class="tw"><table><thead><tr><th>Nama PIC</th><th>Jabatan</th><th>Username</th><th>Password</th><th>Hak Akses</th><th>Status</th><th>Aksi</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
 }
 
 /** ID PIC yang sedang diedit di form (null = mode tambah). */
@@ -3173,7 +3179,7 @@ function editPic(id){
 async function savePic(){
  if(currentUser!=='user')return toast('Akses ditolak! Hanya User yang dapat mengelola Master PIC.');
  const name=$('#pic_name')?.value.trim(),title=$('#pic_title')?.value.trim();
- const uname=($('#pic_user')?.value||'').trim().toLowerCase(),pw=($('#pic_pass')?.value||'');
+ const uname=($('#pic_user')?.value||'').trim().toLowerCase();let pw=($('#pic_pass')?.value||'');
  if(!name||!title)return toast('Nama dan jabatan PIC wajib diisi.');
  if((S.pics||[]).some(p=>p.id!==editPicId&&p.name.toLowerCase()===name.toLowerCase()))return toast('Nama PIC sudah terdaftar.');
  const cur=editPicId?(S.pics||[]).find(x=>x.id===editPicId):null;
@@ -3181,6 +3187,7 @@ async function savePic(){
   if(!/^[a-z0-9._-]{3,30}$/.test(uname))return toast('Username 3-30 karakter: huruf kecil, angka, titik, strip, atau underscore (tanpa spasi).');
   if(Object.hasOwn(ACCOUNTS,uname))return toast('Username itu dipakai akun sistem. Gunakan username lain.');
   if((S.pics||[]).some(p=>p.id!==editPicId&&p.username&&String(p.username).toLowerCase()===uname))return toast('Username sudah dipakai PIC lain.');
+  if(!(cur&&cur.passHash)&&!pw)pw='123';   // Update 38: akun baru tanpa password -> 123
   const mn=pwMin({name,username:uname});
   if(!(cur&&cur.passHash)&&pw.length<mn)return toast('Password minimal '+mn+' karakter.');
   if(pw&&pw.length<mn)return toast('Password minimal '+mn+' karakter.');
@@ -3191,7 +3198,7 @@ async function savePic(){
  if(cur&&cur.id===currentPicId&&role!==picRole(cur))return toast('Tidak dapat mengubah hak akses akun yang sedang Anda pakai.');
  let cred=null;
  if(uname){
-  if(pw){const salt=newSalt();cred={username:uname,salt,passHash:await hashPw(salt,pw),pw}}
+  if(pw){const salt=newSalt();cred={username:uname,salt,passHash:await hashPw(salt,pw),pw,pwV:1}}
   else cred={username:uname,salt:cur.salt,passHash:cur.passHash,pw:cur.pw};
  }
  if(editPicId){
