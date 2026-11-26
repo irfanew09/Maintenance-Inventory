@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 39 - Cek duplikat nama komponen (Master Barang & kartu cek duplikat)
+ Versi dokumen : Update 40 - Pengembalian Form PR ke Draft Request Sparepart (Authorities User)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -277,6 +277,7 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 40 : Pengembalian Form PR ke Draft Request Sparepart (Authorities User). User dapat mengembalikan form PR yang belum diproses (atau sisa parsial) kembali menjadi daftar pesanan draft di Request Sparepart.
  Update 39 : Cek duplikat nama komponen. normNama() membuang tanda baca & spasi lalu membandingkan huruf kecil ("Bearing - 6204" = "bearing 6204").
              Simpan Master Barang menolak nama yang sama dengan barang lain. Kartu "Cek Duplikat Komponen" di menu Master menampilkan
              data lama yang sudah ganda (User & Supervisor). Tidak ada penggabungan otomatis; kelompok diselesaikan manual.
@@ -2936,6 +2937,7 @@ function vProc(){
       <small class="mt" style="font-weight:600">${pct}%</small>
      </div>
      <button class="btn s" onclick="printReqFormById('${f.id}',event)" title="Cetak Ulang PDF Form Request">🖨️ PDF</button>
+     ${currentUser==='user'?`<button class="btn s" style="background:var(--wa-bg);color:var(--wa);border-color:var(--wa);font-weight:600" onclick="returnReqFormToDraft('${f.id}',event)" title="Kembalikan item PR ini ke daftar draft pesanan (belum diproses)">${pend==='ret_'+f.id?'Yakin Kembalikan ke Draft?':'↩ Kembalikan ke Draft'}</button>`:''}
      <button class="btn s d" onclick="delReqForm('${f.id}',event)" title="Hapus Form Request">${pend==='prf_'+f.id?'Yakin?':'Hapus'}</button>
      <span style="font-size:14px;color:var(--mt);padding:0 4px">${isOpen?'▲':'▼'}</span>
     </div>
@@ -3105,6 +3107,81 @@ function undoReceivePart(formId,rowId,partId){
  renderNav();
  render();
  toast(`Kedatangan "${row.name}" (${num(qty)} ${row.unit}) dibatalkan & stok dikembalikan`);
+}
+
+/** Mengembalikan Form PR (yang belum diproses / sisa item yang belum diterima) kembali ke draft Request Sparepart. Khusus User. */
+function returnReqFormToDraft(formId, ev){
+ if(ev)ev.stopPropagation();
+ if(currentUser !== 'user') return toast('Akses ditolak! Hanya Authorities User yang dapat mengembalikan request ke draft.');
+ 
+ const f = (S.reqForms || []).find(x => x.id === formId);
+ if(!f) return toast('Form PR tidak ditemukan.');
+
+ if(pend !== 'ret_' + formId){
+  pend = 'ret_' + formId;
+  render();
+  setTimeout(() => { if(pend === 'ret_' + formId){ pend = null; if(V === 'proc') render(); } }, 3500);
+  return;
+ }
+ pend = null;
+
+ if(!Array.isArray(S.reqs)) S.reqs = [];
+ let movedCount = 0;
+
+ (f.items || []).forEach(x => {
+  const remain = rowRemain(x);
+  // Hanya pindahkan item yang belum diterima atau masih ada sisa
+  if(remain > 0){
+   const it = findById(x.itemId) || S.items.find(i => i.sku === x.sku);
+   const curStock = it ? it.stock : (x.stockSnapshot ?? 0);
+   const ex = S.reqs.find(r => r.itemId === x.itemId);
+   
+   if(ex){
+    ex.qty = r3((Number(ex.qty) || 0) + remain);
+    ex.stockSnapshot = curStock;
+   } else {
+    S.reqs.push({
+     id: uid(),
+     itemId: x.itemId,
+     sku: x.sku,
+     name: x.name,
+     stockSnapshot: curStock,
+     qty: remain,
+     unit: x.unit || 'pcs',
+     note: x.note ? (x.note + ` (Retur ${f.docNo})`) : `Retur dari ${f.docNo}`
+    });
+   }
+   movedCount++;
+  }
+ });
+
+ if(movedCount === 0){
+  return toast('Tidak ada sisa sparepart yang dapat dikembalikan (semua item sudah diterima).');
+ }
+
+ // Cek apakah ada item yang sudah pernah diterima sebagian
+ const hasReceivedParts = (f.items || []).some(x => rowRecv(x) > 0);
+
+ if(hasReceivedParts){
+  // Jika sudah ada yang diterima, arsipkan Form PR untuk sisa barang yang sudah masuk stok
+  f.items = f.items.filter(x => rowRecv(x) > 0);
+  f.items.forEach(x => { x.qty = rowRecv(x); x.received = true; syncRowReceipt(x); });
+  f.completedDate = today();
+  f.completedTime = wibTime();
+  if(!Array.isArray(S.reqArchive)) S.reqArchive = [];
+  S.reqArchive.unshift(f);
+  S.reqForms = S.reqForms.filter(x => x.id !== formId);
+  toast(`${movedCount} item sisa berhasil dipindahkan ke draft Request Sparepart. Form sebagian diarsipkan.`);
+ } else {
+  // Jika belum ada yang diterima sama sekali, hapus Form PR sepenuhnya
+  S.reqForms = S.reqForms.filter(x => x.id !== formId);
+  toast(`Form ${f.docNo} berhasil dibatalkan dan ${movedCount} item dikembalikan ke draft Request.`);
+ }
+
+ if(openFormId === formId) openFormId = S.reqForms[0]?.id || null;
+ save();
+ renderNav();
+ go('req');
 }
 
 /** Menghapus Form PR berjalan dengan konfirmasi dua klik. Bukan untuk supervisor. */
