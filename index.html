@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 41 - Optimasi performa (loading lebih cepat, tabel & pencarian ringan)
+ Versi dokumen : Update 42 - Saran nama barang Request Sparepart lebih panjang & jelas
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -277,6 +277,8 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 42 : Request Sparepart: saran nama barang kini daftar lebar (nama + kode lengkap, stok, status, penanda sudah di draft/PR)
+             menggantikan datalist bawaan browser yang memotong teks. Fungsi baru: reqSugOpen/reqSugPick/reqSugKey/reqSugClose.
  Update 41 : Optimasi performa (tanpa mengubah data/fitur).
              Pemakaian: esc()/num()/wibParts() memakai formatter yang dibuat sekali; findById() memakai indeks Map (itemIndex());
              save() menggabungkan banyak panggilan berurutan menjadi satu stringify + satu tulis IndexedDB.
@@ -2474,8 +2476,7 @@ function vReq(){
   <div class="req-grid">
    <div>
     <label for="r_item">Nama Barang / Suku Cadang *</label>
-    <input id="r_item" list="req_dl" placeholder="Ketik nama barang (mis. Bearing, Kontaktor, Sekring)…" autocomplete="off" oninput="reqInfo()">
-    <datalist id="req_dl">${S.items.map(i=>`<option value="${esc(i.name)} (${esc(i.sku)})">Stok: ${num(i.stock)} ${esc(i.unit)} · ${stat(i)[0]}</option>`).join('')}</datalist>
+    <input id="r_item" placeholder="Ketik nama atau kode barang (mis. Bearing, Kontaktor, WEL-050)…" autocomplete="off" role="combobox" aria-expanded="false" aria-controls="reqSug" oninput="reqInfo();reqSugOpen()" onfocus="reqSugOpen()" onkeydown="reqSugKey(event)">
    </div>
    <div>
     <label for="r_stock">Jumlah Stok Saat Ini</label>
@@ -2524,6 +2525,61 @@ function vReq(){
   <div class="table-meta">Tips: Ekspor (PDF) hanya untuk dicetak dan diajukan ke atasan; daftar tetap bisa diubah. Setelah daftar final, klik <b>📋 Simpan ke Proses Request</b> untuk memindahkannya ke tab <b>⏳ Proses Request</b>.</div>
  </div>`;
 }
+
+/* Update 42: saran barang Request Sparepart berupa daftar lebar buatan sendiri (menggantikan datalist bawaan browser yang memotong
+   nama panjang). Menampilkan nama LENGKAP + kode LENGKAP (teks turun baris, tidak dipotong), stok, status, serta penanda bila
+   barang sudah ada di draft / PR berjalan. Pencarian: semua kata harus cocok di nama atau kode (urutan bebas). Maks. 40 hasil.
+   Memilih saran mengisi #r_item dengan "Nama (Kode)" sehingga findItemForReq() menemukan barang yang tepat. */
+let reqSugIdx=-1,reqSugList=[];
+function reqSugEl(){
+ let el=document.getElementById('reqSug');
+ if(!el){
+  el=document.createElement('div');el.id='reqSug';el.setAttribute('role','listbox');
+  el.style.cssText='position:fixed;z-index:1500;display:none;max-height:min(60vh,420px);overflow-y:auto;background:var(--sf);color:var(--tx);border:1px solid var(--bd);border-radius:10px;box-shadow:0 12px 32px rgba(0,0,0,.35);padding:4px';
+  el.addEventListener('mousedown',e=>{e.preventDefault();const r=e.target.closest('[data-i]');if(r)reqSugPick(+r.dataset.i)});
+  document.body.appendChild(el);
+ }
+ return el;
+}
+function reqSugClose(){const el=document.getElementById('reqSug');if(el)el.style.display='none';const i=$('#r_item');if(i)i.setAttribute('aria-expanded','false');reqSugIdx=-1}
+function reqSugOpen(){
+ const inp=$('#r_item');if(!inp||V!=='req')return;
+ const toks=inp.value.toLowerCase().split(/\s+/).filter(Boolean);
+ const hit=S.items.filter(i=>{const h=(i.name+' '+i.sku).toLowerCase();return toks.every(t=>h.includes(t))});
+ reqSugList=hit.slice(0,40);
+ const el=reqSugEl();
+ if(!reqSugList.length){
+  el.innerHTML='<div style="padding:10px 12px;color:var(--mt);font-size:13px">Tidak ada barang yang cocok</div>';
+ }else{
+  const inDraft=new Set((S.reqs||[]).map(r=>r.itemId));
+  el.innerHTML=reqSugList.map((i,n)=>{
+   const st=stat(i),pq=pendQty(i.id);
+   return `<div data-i="${n}" role="option" style="padding:8px 10px;border-radius:8px;cursor:pointer;${n===reqSugIdx?'background:var(--sf2)':''}"><div style="font-weight:600;white-space:normal;word-break:break-word">${esc(i.name)}</div><div style="font-size:12px;color:var(--mt);margin-top:2px;white-space:normal;word-break:break-all">Kode: <b style="color:var(--tx)">${esc(i.sku)}</b> · Stok: ${num(i.stock)} ${esc(i.unit)} · <span class="b ${st[1]}">${st[0]}</span>${inDraft.has(i.id)?' · <b style="color:var(--wa)">sudah di draft</b>':''}${pq>0?' · <b style="color:var(--wa)">dalam PR +'+num(pq)+'</b>':''}</div></div>`;
+  }).join('')+(hit.length>40?`<div style="padding:8px 12px;color:var(--mt);font-size:12px">Menampilkan 40 dari ${hit.length} hasil, ketik lebih spesifik.</div>`:'');
+ }
+ const r=inp.getBoundingClientRect(),w=Math.min(Math.max(r.width,520),innerWidth-16);
+ el.style.width=w+'px';el.style.left=Math.max(8,Math.min(r.left,innerWidth-w-8))+'px';
+ const below=innerHeight-r.bottom;
+ if(below<220&&r.top>below){el.style.top='auto';el.style.bottom=(innerHeight-r.top+4)+'px'}else{el.style.bottom='auto';el.style.top=(r.bottom+4)+'px'}
+ el.style.display='block';inp.setAttribute('aria-expanded','true');
+}
+function reqSugPick(n){
+ const i=reqSugList[n];if(!i)return;
+ const inp=$('#r_item');inp.value=`${i.name} (${i.sku})`;
+ reqSugClose();reqInfo();$('#r_qty')?.focus();
+}
+function reqSugKey(e){
+ const el=document.getElementById('reqSug');
+ if(!el||el.style.display==='none'){if(e.key==='ArrowDown')reqSugOpen();return}
+ if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+  e.preventDefault();const n=reqSugList.length;if(!n)return;
+  reqSugIdx=(reqSugIdx+(e.key==='ArrowDown'?1:-1)+n)%n;
+  [...el.querySelectorAll('[data-i]')].forEach((d,k)=>{d.style.background=k===reqSugIdx?'var(--sf2)':'';if(k===reqSugIdx)d.scrollIntoView({block:'nearest'})});
+ }else if(e.key==='Enter'){if(reqSugIdx>=0){e.preventDefault();reqSugPick(reqSugIdx)}}
+ else if(e.key==='Escape'||e.key==='Tab')reqSugClose();
+}
+document.addEventListener('mousedown',e=>{if(e.target.id!=='r_item'&&!e.target.closest('#reqSug'))reqSugClose()});
+addEventListener('resize',reqSugClose);
 
 /** Mencari barang dari teks pilihan form request ("Nama (SKU)", SKU, atau nama). */
 function findItemForReq(s){
