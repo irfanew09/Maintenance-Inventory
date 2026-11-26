@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 40 - Pengembalian Form PR ke Draft Request Sparepart (Authorities User)
+ Versi dokumen : Update 41 - Optimasi performa (loading lebih cepat, tabel & pencarian ringan)
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -277,6 +277,16 @@
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 41 : Optimasi performa (tanpa mengubah data/fitur).
+             Pemakaian: esc()/num()/wibParts() memakai formatter yang dibuat sekali; findById() memakai indeks Map (itemIndex());
+             save() menggabungkan banyak panggilan berurutan menjadi satu stringify + satu tulis IndexedDB.
+             Daftar Suku Cadang: tabel digambar bertahap (TBL_PAGE=150 baris, tombol "Tampilkan ... lagi"), pencarian ditunda
+             120 ms (debounce) dan teks pencarian di-cache; export/laporan tetap memakai SEMUA barang hasil filter.
+             Riwayat Masuk/Keluar & Transaksi Terakhir: urutan transaksi di-cache (txSorted()), hist() di-cache, pencarian log di-debounce.
+             Firebase ([22]): SDK mulai dimuat segera (paralel dengan data lokal); base dibaca paralel; hash record di-cache
+             (nilai hash tidak berubah, base lama tetap cocok); koleksi utama didengarkan per koleksi dan koleksi "images" (paling
+             berat) diunduh belakangan setelah sinkron awal (LAZY/cols()/MAINC). Gambar lokal tetap tampil dari IndexedDB.
+             Aturan baru: jalur snapshot utama (onSnap) HANYA memproses MAINC; images hanya lewat onImgSnap().
  Update 40 : Pengembalian Form PR ke Draft Request Sparepart (Authorities User). User dapat mengembalikan form PR yang belum diproses (atau sisa parsial) kembali menjadi daftar pesanan draft di Request Sparepart.
  Update 39 : Cek duplikat nama komponen. normNama() membuang tanda baca & spasi lalu membandingkan huruf kecil ("Bearing - 6204" = "bearing 6204").
              Simpan Master Barang menolak nama yang sama dengan barang lain. Kartu "Cek Duplikat Komponen" di menu Master menampilkan
@@ -705,10 +715,15 @@ window.addEventListener('unhandledrejection',function(e){
 const $=s=>document.querySelector(s);
 
 /** Escape karakter HTML (& < > ") agar aman disisipkan ke string HTML. WAJIB untuk semua teks dari pengguna/data. */
-const esc=s=>String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const ESC_MAP={'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'};
+const esc=s=>{s=String(s??'');return /[&<>"]/.test(s)?s.replace(/[&<>"]/g,c=>ESC_MAP[c]):s};   // Update 41: tanpa membuat objek baru per karakter
 
 /** Format angka gaya Indonesia (pemisah ribuan titik), contoh 1500.5 -> "1.500,5". */
-const num=n=>Number(n||0).toLocaleString('id-ID');
+const NUM_FMT=new Intl.NumberFormat('id-ID');   // Update 41: formatter dibuat sekali (toLocaleString membuat formatter baru di setiap panggilan)
+const num=n=>NUM_FMT.format(Number(n||0));
+
+/** Update 41: menunda pemanggilan fn sampai pengguna berhenti mengetik selama ms milidetik. */
+function debounce(fn,ms){let t;return function(){const a=arguments,c=this;clearTimeout(t);t=setTimeout(()=>fn.apply(c,a),ms)}}
 
 /** Membuat ID acak pendek (7 karakter) untuk record baru. */
 const uid=()=>Math.random().toString(36).slice(2,9);
@@ -777,8 +792,9 @@ function dl(n,t,m){
    ========================================================================== */
 
 /** Memecah waktu menjadi bagian (year, month, day, hour, minute, second) pada zona Asia/Jakarta. */
+let _wibFmt=null;   // Update 41: Intl.DateTimeFormat mahal dibuat; cukup sekali
 function wibParts(d=new Date()){
- const f=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false});
+ const f=_wibFmt||(_wibFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Jakarta',year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}));
  const p={};f.formatToParts(d).forEach(x=>{p[x.type]=x.value});
  return p;
 }
@@ -1094,13 +1110,21 @@ function setSaveState(ok){
 }
 
 /** Menyimpan seluruh S ke IndexedDB lalu menjadwalkan Auto Backup. Panggil setiap selesai mengubah data. */
+let saveQueued=false;   // Update 41: beberapa save() berturut-turut dalam satu proses digabung menjadi SATU stringify + SATU tulis IndexedDB
 function save(){
  dataVer++;
- const json=JSON.stringify(S);
- saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
-  console.error('[MIMS] Gagal menyimpan data:',e);
-  setSaveState(false);
- });
+ if(!saveQueued){
+  saveQueued=true;
+  queueMicrotask(()=>{
+   saveQueued=false;
+   let json;
+   try{json=JSON.stringify(S)}catch(e){console.error('[MIMS] Gagal menyusun data:',e);setSaveState(false);return}
+   saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
+    console.error('[MIMS] Gagal menyimpan data:',e);
+    setSaveState(false);
+   });
+  });
+ }
  qSave();
  try{abSchedule()}catch(e){console.error('[MIMS] Gagal menjadwalkan backup:',e)}
  try{window.mimsFbPush&&window.mimsFbPush()}catch(e){console.error('[MIMS] Firebase:',e)}
@@ -1132,7 +1156,22 @@ const picsList=()=>((S.pics||[]).filter(p=>p.active!==false).map(p=>p.name));
 const findPic=name=>(S.pics||[]).find(p=>p.name===name&&p.active!==false);
 
 /** Mencari barang berdasarkan id. */
-const findById=id=>S.items.find(x=>x.id===id);
+/* Update 41: indeks id -> barang (Map) dibangun sekali per perubahan data, bukan pencarian linear di setiap pemanggilan.
+   Indeks dianggap basi bila array/jumlah barang/dataVer berubah; bila tidak ketemu dicek ulang secara linear (aman). */
+let _idxMap=null,_idxArr=null,_idxLen=-1,_idxVer=-1;
+function itemIndex(){
+ const a=S.items;
+ if(_idxMap&&_idxArr===a&&_idxLen===a.length&&_idxVer===dataVer)return _idxMap;
+ const m=new Map();
+ for(const x of a)if(x&&!m.has(x.id))m.set(x.id,x);
+ _idxMap=m;_idxArr=a;_idxLen=a.length;_idxVer=dataVer;
+ return m;
+}
+const findById=id=>{
+ const x=itemIndex().get(id);
+ if(x&&x.id===id)return x;
+ return S.items.find(v=>v.id===id);
+};
 
 /** Nama barang dari id ("(dihapus)" bila barang sudah tidak ada). */
 const nm=id=>{const i=findById(id);return i?i.name:'(dihapus)'};
@@ -1617,6 +1656,7 @@ function dashboardStatusChartsHtml(){
  const active=Array.isArray(S.reqForms)?S.reqForms:[];
  const archived=Array.isArray(S.reqArchive)?S.reqArchive:[];
  const seen=new Set();
+ const archSet=new Set(archived);   // Update 41: pencarian O(1) menggantikan archived.includes()
  let waiting=0,partial=0,completed=0;
  [...active,...archived].forEach(f=>{
   if(!f || (f.id && seen.has(f.id)))return;
@@ -1624,7 +1664,7 @@ function dashboardStatusChartsHtml(){
   const rows=Array.isArray(f.items)?f.items:[];
   const started=rows.filter(x=>x && (x.received===true||rowRecv(x)>0)).length;
   const full=rows.filter(x=>x && x.received===true).length;
-  if(archived.includes(f)){
+  if(archSet.has(f)){
    completed++;
   }else if(rows.length===0 || started===0){
    waiting++;
@@ -1708,7 +1748,7 @@ function vDash(){
  const critAll=[...out,...low].filter(i=>i.notify!==false);
  const mutedCnt=[...out,...low].filter(i=>i.notify===false).length;
  const alert=critAll.slice(0,8).map(i=>`<div class="row"><span><b>${esc(i.sku)}</b> · ${esc(i.name)}<small class="mt">Rak ${esc(i.loc)} · Min: ${num(i.min)} ${esc(i.unit)}</small></span><span style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><label class="chk-wrap" title="Hapus centang untuk mematikan notifikasi & mengecualikan dari Auto Input Request" style="font-weight:500;color:var(--mt);margin-right:2px"><input type="checkbox" checked onchange="toggleItemNotify('${i.id}',this.checked)"><span>Notif</span></label><b>${num(i.stock)}</b> ${badge(i)}${pendBadge(i)} <button class="btn s p" title="Buat Request Pembelian Sparepart" onclick="quickReq('${i.id}')">＋ Restock</button></span></div>`).join('')||'<div class="mt">Semua stok aman 🎉 (atau notifikasi stok kritis dimatikan)</div>';
- const rec=[...S.tx].reverse().slice(0,7).map(t=>`<div class="row"><span>${esc(nm(t.item))}<small class="mt">${esc(t.date)}${t.time?' · '+esc(t.time)+' WIB':''}${t.pic?' · 👤 '+esc(t.pic):''}${t.note?' · '+esc(t.note):''}</small></span><b style="color:var(--${t.type==='in'?'ok':'er'})">${t.type==='in'?'+':'−'}${num(t.qty)} ${esc(unitOf(t.item))}</b></div>`).join('')||'<div class="mt">Belum ada transaksi</div>';
+ const rec=S.tx.slice(-7).reverse().map(t=>`<div class="row"><span>${esc(nm(t.item))}<small class="mt">${esc(t.date)}${t.time?' · '+esc(t.time)+' WIB':''}${t.pic?' · 👤 '+esc(t.pic):''}${t.note?' · '+esc(t.note):''}</small></span><b style="color:var(--${t.type==='in'?'ok':'er'})">${t.type==='in'?'+':'−'}${num(t.qty)} ${esc(unitOf(t.item))}</b></div>`).join('')||'<div class="mt">Belum ada transaksi</div>';
  const kp=(l,v,s,act)=>`<div class="card kp" onclick="${act}" title="Klik untuk melihat detail"><div class="l">${l}</div><div class="v">${v}</div><div class="s">${s}</div></div>`;
  
  return `<div class="page-head"><div><h2>Dashboard Maintenance</h2><p class="page-subtitle">Ringkasan kondisi persediaan dan aktivitas spare part (Peran: <b>${ACCOUNTS[currentUser].name}</b>)</p></div><div class="page-actions"><button class="btn" onclick="go('req')">🛒 Request (${(S.reqs||[]).length})</button><button class="btn" onclick="go('proc')">⏳ Proses Request (${(S.reqForms||[]).length})</button><button class="btn p" onclick="go('in')">＋ Barang Masuk</button><button class="btn d" onclick="go('out')">－ Barang Keluar</button></div></div>
@@ -1747,12 +1787,13 @@ function vDash(){
 
 /** Kerangka halaman: judul, toolbar pencarian/filter/urutan, legenda status, dan tabel kosong yang diisi drawTable(). */
 function vList(){
+ TBL_LIM=TBL_PAGE;   // Update 41: render penuh = mulai lagi dari halaman pertama tabel
  return `<div class="page-head"><div><h2>Daftar Suku Cadang (Inventory)</h2><p class="page-subtitle">Kelola master data, pantau saldo, atur ceklis notifikasi stok kritis/auto-request, dan lakukan transaksi cepat.</p></div><div class="page-actions"><button class="btn" onclick="openExportDialog()">🖨️ Export Laporan (PDF)</button>${['user','supervisor'].includes(currentUser)?`<button class="btn p" onclick="go('master')">+ Master Spare Part Baru</button>`:''}</div></div>
  <div class="inventory-toolbar">
-  <div class="search-wrap"><input id="q" placeholder="Cari kode, nama, lokasi, atau supplier…" value="${esc(F.q)}" oninput="F.q=this.value;drawTable()"></div>
-  <select aria-label="Filter kategori" onchange="F.cat=this.value;drawTable()"><option value="">Semua kategori</option>${cats().map(c=>`<option ${F.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
-  <select aria-label="Filter status" onchange="F.st=this.value;drawTable()">${[['','Semua status'],['Aman','Aman'],['Menipis','Menipis'],['Habis','Habis']].map(o=>`<option value="${o[0]}" ${F.st===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
-  <select aria-label="Urutkan" onchange="F.sort=this.value;drawTable()">${[['name','Nama A–Z'],['sku','Kode A–Z'],['stock','Stok terendah'],['loc','Lokasi'],['created_desc','Waktu dimasukkan (terbaru)'],['created_asc','Waktu dimasukkan (terlama)']].map(o=>`<option value="${o[0]}" ${F.sort===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
+  <div class="search-wrap"><input id="q" placeholder="Cari kode, nama, lokasi, atau supplier…" value="${esc(F.q)}" oninput="F.q=this.value;tblSearch()"></div>
+  <select aria-label="Filter kategori" onchange="F.cat=this.value;tblFilter()"><option value="">Semua kategori</option>${cats().map(c=>`<option ${F.cat===c?'selected':''}>${esc(c)}</option>`).join('')}</select>
+  <select aria-label="Filter status" onchange="F.st=this.value;tblFilter()">${[['','Semua status'],['Aman','Aman'],['Menipis','Menipis'],['Habis','Habis']].map(o=>`<option value="${o[0]}" ${F.st===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
+  <select aria-label="Urutkan" onchange="F.sort=this.value;tblFilter()">${[['name','Nama A–Z'],['sku','Kode A–Z'],['stock','Stok terendah'],['loc','Lokasi'],['created_desc','Waktu dimasukkan (terbaru)'],['created_asc','Waktu dimasukkan (terlama)']].map(o=>`<option value="${o[0]}" ${F.sort===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
   ${F.q||F.cat||F.st?`<button class="btn s" onclick="F={q:'',cat:'',st:'',sort:F.sort};render()">Reset Filter</button>`:''}
  </div>
  <p class="inventory-summary"><span class="b ok">Aman</span> di atas minimum &nbsp; <span class="b wa">Menipis</span> sama dengan/di bawah minimum &nbsp; <span class="b er">Habis</span> stok nol &nbsp;·&nbsp; Centang <b>Notif & Auto-Req</b> agar barang masuk Peringatan Stok & Auto Input Request saat menipis/habis.</p>
@@ -1760,19 +1801,36 @@ function vList(){
 }
 
 /** Barang setelah filter F (teks, kategori, status) dan urutan F.sort. Dipakai tabel dan laporan Export. */
+const TXT_COLL=new Intl.Collator();   // Update 41: sama hasilnya dengan localeCompare() tanpa argumen, tetapi jauh lebih cepat
+const _hayCache=new WeakMap();
+/** Teks pencarian (huruf kecil) sebuah barang; di-cache per barang dan dihitung ulang hanya bila isinya berubah. */
+function itemHay(i){
+ const sig=[i.sku,i.name,i.loc,i.sup].join(' ');
+ const c=_hayCache.get(i);
+ if(c&&c.sig===sig)return c.h;
+ const h=sig.toLowerCase();
+ _hayCache.set(i,{sig,h});
+ return h;
+}
 function filteredInventoryItems(){
  const q=F.q.toLowerCase();
- const r=S.items.filter(i=>(!q||[i.sku,i.name,i.loc,i.sup].join(' ').toLowerCase().includes(q))&&(!F.cat||i.cat===F.cat)&&(!F.st||stat(i)[0]===F.st));
- const so={name:(a,b)=>a.name.localeCompare(b.name),stock:(a,b)=>a.stock-b.stock,loc:(a,b)=>a.loc.localeCompare(b.loc),sku:(a,b)=>skuCollator.compare(String(a.sku||''),String(b.sku||'')),created_desc:(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0),created_asc:(a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0)}[F.sort];
+ const r=S.items.filter(i=>(!q||itemHay(i).includes(q))&&(!F.cat||i.cat===F.cat)&&(!F.st||stat(i)[0]===F.st));
+ const so={name:(a,b)=>TXT_COLL.compare(a.name,b.name),stock:(a,b)=>a.stock-b.stock,loc:(a,b)=>TXT_COLL.compare(a.loc,b.loc),sku:(a,b)=>skuCollator.compare(String(a.sku||''),String(b.sku||'')),created_desc:(a,b)=>(Date.parse(b.createdAt)||0)-(Date.parse(a.createdAt)||0),created_asc:(a,b)=>(Date.parse(a.createdAt)||0)-(Date.parse(b.createdAt)||0)}[F.sort];
  return r.sort(so||(()=>0));
 }
 
 /** Mengisi isi tabel (#tb) dan penghitung (#cnt) sesuai filter; tombol aksi disesuaikan peran. */
+const TBL_PAGE=150;   // Update 41: tabel digambar bertahap (150 baris per halaman) agar halaman tetap ringan walau barang ribuan
+let TBL_LIM=TBL_PAGE;
+const tblSearch=debounce(()=>{if(V!=='list'||!$('#tb'))return;TBL_LIM=TBL_PAGE;drawTable()},120);
+function tblFilter(){TBL_LIM=TBL_PAGE;drawTable()}
+function tblMore(){TBL_LIM+=TBL_PAGE;drawTable()}
 function drawTable(){
  const canTab=t=>ACCOUNTS[currentUser].tabs.includes(t);   // tombol aksi hanya tampil bila peran punya menu terkait
  let r=filteredInventoryItems();
  const hasImg=new Set((S.images||[]).map(x=>x.id));
- $('#tb').innerHTML=r.map(i=>{
+ const shown=r.length>TBL_LIM?r.slice(0,TBL_LIM):r;
+ $('#tb').innerHTML=shown.map(i=>{
   const notifOn=i.notify!==false;
   return `<tr><td><b>${esc(i.sku)}</b></td><td><button type="button" class="lnk" title="Klik untuk melihat gambar & detail" onclick="openItemDlg('${i.id}')">${esc(i.name)}</button>${hasImg.has(i.id)?' <span title="Ada gambar">📷</span>':''}${i.sup?`<small>Supplier: ${esc(i.sup)}</small>`:''}${!notifOn?`<small style="color:var(--wa)">🔕 Notifikasi & Auto-Request Nonaktif</small>`:''}</td><td>${esc(i.cat)}</td><td>${esc(i.loc)}</td><td class="r"><b>${num(i.stock)}</b> ${esc(i.unit)}${pendQty(i.id)>0?`<small>+${num(pendQty(i.id))} dalam PR</small>`:''}</td><td class="r">${num(i.min)}</td><td>${badge(i)}</td>
   <td class="c">
@@ -1789,7 +1847,8 @@ function drawTable(){
    <button class="btn s d" onclick="delItem('${i.id}')">${pend===i.id?'Yakin?':'Hapus'}</button>`:''}
   </div></td></tr>`;
  }).join('')||'<tr><td colspan="10" class="mt">Tidak ada data yang cocok dengan filter</td></tr>';
- $('#cnt').textContent=r.length+' dari '+S.items.length+' item ditampilkan';
+ if(shown.length<r.length)$('#tb').insertAdjacentHTML('beforeend',`<tr><td colspan="10" class="c"><button class="btn s" onclick="tblMore()">Tampilkan ${Math.min(TBL_PAGE,r.length-shown.length)} lagi (${shown.length} dari ${r.length})</button></td></tr>`);
+ $('#cnt').textContent=shown.length<r.length?('Menampilkan '+shown.length+' dari '+r.length+' item yang cocok (total '+S.items.length+' item)'):(r.length+' dari '+S.items.length+' item ditampilkan');
 }
 
 /* ---------- Gambar sparepart ---------- */
@@ -2076,9 +2135,25 @@ function rng(ty){
 }
 
 /** Daftar transaksi suatu jenis dalam rentang RG, terbaru di atas. */
+/** Update 41: seluruh transaksi urut terbaru di atas (tanggal+jam). Di-cache per perubahan data; HASILNYA JANGAN DIUBAH (pakai filter/slice untuk salinan). */
+let _txSortCache=null;
+function txSorted(){
+ const c=_txSortCache;
+ if(c&&c.arr===S.tx&&c.len===S.tx.length&&c.ver===dataVer)return c.res;
+ const rows=S.tx.map((t,i)=>({t,k:(t.date||'')+(t.time||''),i}));
+ rows.sort((a,b)=>TXT_COLL.compare(b.k,a.k)||b.i-a.i);   // kunci sama -> yang lebih baru dimasukkan tampil lebih dulu (sama seperti reverse() lama)
+ const res=rows.map(x=>x.t);
+ _txSortCache={arr:S.tx,len:S.tx.length,ver:dataVer,res};
+ return res;
+}
+const _histCache={};
 function hist(ty){
  const[f,t]=rng(ty),q=(RG[ty].q||'').trim().toLowerCase();
- return S.tx.filter(x=>x.type===ty&&(!f||x.date>=f)&&(!t||x.date<=t)&&(!q||String(x.note||'').toLowerCase().includes(q))).reverse().sort((a,b)=>(b.date+(b.time||'')).localeCompare(a.date+(a.time||'')));
+ const key=ty+'|'+f+'|'+t+'|'+q, ts=txSorted(), c=_histCache[ty];
+ if(c&&c.key===key&&c.src===ts)return c.res;   // hbar() + vTx() + drawHist() memanggil hist() berulang kali
+ const res=ts.filter(x=>x.type===ty&&(!f||x.date>=f)&&(!t||x.date<=t)&&(!q||String(x.note||'').toLowerCase().includes(q)));
+ _histCache[ty]={key,src:ts,res};
+ return res;
 }
 
 /** Toolbar riwayat: pilihan periode, tanggal custom, jumlah data, dan tombol PDF. */
@@ -2311,7 +2386,7 @@ function delTx(txId,rerenderFn){
 /** Tampilan log transaksi gabungan dengan filter jenis, tanggal, dan pencarian (RF). */
 function vRecent(){
  const q=RF.q.toLowerCase();
- const all=[...S.tx].reverse().sort((a,b)=>(b.date+(b.time||'')).localeCompare(a.date+(a.time||''))).filter(t=>{
+ const all=txSorted().filter(t=>{
   if(RF.type&&t.type!==RF.type)return false;
   if(RF.from&&t.date<RF.from)return false;
   if(RF.to&&t.date>RF.to)return false;
@@ -2329,7 +2404,7 @@ function vRecent(){
  const moreRow=all.length>LIM.rec?`<tr><td colspan="8" class="c"><button class="btn s" onclick="LIM.rec+=100;drawRecentBody()">Tampilkan 100 lagi (${LIM.rec} dari ${all.length})</button></td></tr>`:'';
  return `<div class="page-head"><div><h2>Transaksi Terakhir</h2><p class="page-subtitle">Pantau seluruh histori penerimaan, pemakaian, PIC pengambil, dan batalkan transaksi jika salah input.</p></div><div class="page-actions"><button class="btn" onclick="expCSV('tx')">📥 Export Transaksi (.csv)</button></div></div>
  <div class="tb">
-  <input placeholder="Cari kode, nama barang, nama PIC, atau catatan WO/PO…" value="${esc(RF.q)}" oninput="RF.q=this.value;drawRecentBody()">
+  <input placeholder="Cari kode, nama barang, nama PIC, atau catatan WO/PO…" value="${esc(RF.q)}" oninput="RF.q=this.value;recSearch()">
   <select onchange="RF.type=this.value;drawRecentBody()">${[['','Semua jenis'],['in','Suku Cadang Masuk'],['out','Suku Cadang Keluar']].map(o=>`<option value="${o[0]}" ${RF.type===o[0]?'selected':''}>${o[1]}</option>`).join('')}</select>
   <input type="date" value="${RF.from}" onchange="RF.from=this.value;drawRecentBody()" title="Dari tanggal">
   <input type="date" value="${RF.to}" onchange="RF.to=this.value;drawRecentBody()" title="Sampai tanggal">
@@ -2339,6 +2414,7 @@ function vRecent(){
 }
 
 /** Menggambar ulang isi log saat filter berubah. */
+const recSearch=debounce(()=>{if(V==='tx'&&$('#recBody'))drawRecentBody()},150);   // Update 41: pencarian log menunggu pengguna berhenti mengetik
 function drawRecentBody(){
  const d=document.createElement('div');
  d.innerHTML=vRecent();
@@ -4391,6 +4467,13 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  const DESC={reqForms:true,reqArchive:true};      // koleksi yang memakai unshift (terbaru di depan)
  const NESTED=['reqForms','reqArchive'];          // record yang punya array items di dalamnya
  const SDK='https://www.gstatic.com/firebasejs/10.8.0/';
+ /* Update 41: koleksi "images" (gambar base64, paling berat) TIDAK ikut sinkron awal. Ia diunduh belakangan (setelah data utama
+    siap dan aplikasi sudah bisa dipakai). Selama belum siap, images dilewati oleh semua langkah sinkron (cols()). Gambar lokal
+    tetap tampil karena sudah ada di S.images dari IndexedDB. */
+ const LAZY=['images'];
+ let imgReady=false, imgStarted=false;
+ const MAINC=COLS.filter(c=>!LAZY.includes(c));   // koleksi utama: satu-satunya yang diproses jalur snapshot utama (onSnap)
+ const cols=()=>imgReady?COLS:MAINC;                // koleksi yang boleh DIKIRIM ke Firebase (images ikut setelah siap)
  const DIRTY_KEY='mims_fb_dirty', DEV_KEY='mims_fb_device', BASE_KEY='mims_fb_base_v1';
 
  let fb=null, db=null, auth=null;   // modul SDK & instance Firebase
@@ -4441,7 +4524,19 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   h2=Math.imul(h2^(h2>>>16),2246822507)^Math.imul(h1^(h1>>>13),3266489909);
   return (4294967296*(2097151&h2)+(h1>>>0)).toString(36);
  }
- const recHash=rec=>hash(canon(rec));
+ const rawHash=rec=>hash(canon(rec));
+ /* Update 41: hash record di-cache per objek. Selama JSON record tidak berubah, hash lama dipakai (JSON.stringify native jauh lebih
+    cepat daripada canon()+hash() berbasis JS). Nilai hash TIDAK berubah, jadi base tersimpan dari sesi lama tetap cocok. */
+ const hashCache=new WeakMap();
+ const recHash=rec=>{
+  let j;
+  try{j=JSON.stringify(rec)}catch(e){return rawHash(rec)}
+  const c=hashCache.get(rec);
+  if(c&&c.j===j)return c.h;
+  const h=rawHash(rec);
+  hashCache.set(rec,{j,h});
+  return h;
+ };
 
  /** Kunci node Firebase dari id record: awalan "k" + id (karakter terlarang . $ # [ ] / % di-encode). */
  const encKey=id=>'k'+String(id).replace(/[.$#\[\]\/%]/g,ch=>'%'+ch.charCodeAt(0).toString(16).toUpperCase());
@@ -4538,9 +4633,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
     else list=Object.keys(node).map(k=>[node[k],Number(node[k]&&node[k]._i)||0]);
     list.forEach(([r,i])=>{
      if(!r||typeof r!=='object'||r.id==null||r.id==='')return;
-     const rec=clone(r);delete rec._i;
+     const rec=Object.assign({},r);delete rec._i;   // Update 41: salinan dangkal (cukup; snapshot dipakai ulang oleh gerbang koleksi)
      if(NESTED.includes(c))rec.items=arr(rec.items).map(x=>(x&&x.parts!==undefined)?{...x,parts:arr(x.parts)}:x);
-     m.set(encKey(rec.id),{rec,h:recHash(rec),i});
+     m.set(encKey(rec.id),{rec,h:rawHash(rec),i});
     });
    }
    maps[c]=m;
@@ -4567,8 +4662,8 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  }
 
  /** True bila isi lokal berbeda dari Firebase. */
- function differs(P){
-  return COLS.some(c=>{
+ function differs(P,cs=MAINC){
+  return cs.some(c=>{
    const L=localMap(c),R=P.maps[c];
    if(L.size!==R.size)return true;
    for(const [k,v] of L){const r=R.get(k);if(!r||r.h!==v.h)return true}
@@ -4578,9 +4673,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
 
  /* ---------- Merge tiga arah ---------- */
  /** Menggabungkan snapshot Firebase ke S per record. Hasil: {adopted, pushNeeded}. */
- function merge(P){
+ function merge(P,cs=MAINC){
   let adopted=false, pushNeeded=false;
-  COLS.forEach(c=>{
+  cs.forEach(c=>{
    const R=P.maps[c], L=localMap(c), B=base[c];
    R.forEach((r,k)=>{seq[c].set(k,r.i)});
    const keys=new Set([...R.keys(),...L.keys(),...B.keys()]);
@@ -4609,12 +4704,12 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  }
 
  /** Persiapan sinkron awal: menyiapkan base agar merge menghasilkan perilaku yang aman. */
- function prepareFirst(P){
-  const rEmpty=!COLS.some(c=>P.maps[c].size>0);
-  COLS.forEach(c=>{if(P.legacy[c])rewrite[c]=true});
+ function prepareFirst(P,cs=MAINC){
+  const rEmpty=!cs.some(c=>P.maps[c].size>0);
+  cs.forEach(c=>{if(P.legacy[c])rewrite[c]=true});
   if(hasBase){
    // Penjaga: bila data lokal tampak hilang (mis. data contoh menggantikan data rusak), pulihkan dari Firebase.
-   COLS.forEach(c=>{
+   cs.forEach(c=>{
     const L=localMap(c),B=base[c];let miss=0;
     B.forEach((h,k)=>{if(!L.has(k))miss++});
     if(B.size>=10&&miss/B.size>0.5){
@@ -4626,11 +4721,11 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   }
   if(rEmpty)return;                                   // Firebase kosong: semua data lokal dianggap baru -> diunggah
   if(lsGet(DIRTY_KEY)==='1'){
-   backup('cadangan_firebase_',{maps:Object.fromEntries(COLS.map(c=>[c,[...P.maps[c].values()].map(x=>x.rec)]))});
-   COLS.forEach(c=>{const L=localMap(c);P.maps[c].forEach((r,k)=>{if(L.has(k))base[c].set(k,r.h)})});   // lokal menang untuk record yang sama
+   backup('cadangan_firebase_',{maps:Object.fromEntries(cs.map(c=>[c,[...P.maps[c].values()].map(x=>x.rec)]))});
+   cs.forEach(c=>{const L=localMap(c);P.maps[c].forEach((r,k)=>{if(L.has(k))base[c].set(k,r.h)})});   // lokal menang untuk record yang sama
   }else{
-   if(differs(P))backup('cadangan_sebelum_sync_',{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,images:S.images,meta:S.meta});
-   COLS.forEach(c=>{localMap(c).forEach((v,k)=>base[c].set(k,v.h))});                                  // lokal dianggap tidak berubah -> Firebase menang
+   if(differs(P,cs))backup('cadangan_sebelum_sync_',cs===MAINC?{items:S.items,tx:S.tx,reqs:S.reqs,reqForms:S.reqForms,reqArchive:S.reqArchive,opnames:S.opnames,pics:S.pics,images:S.images,meta:S.meta}:Object.fromEntries(cs.map(c=>[c,S[c]])));   // putaran images: cadangkan koleksinya saja
+   cs.forEach(c=>{localMap(c).forEach((v,k)=>base[c].set(k,v.h))});                                  // lokal dianggap tidak berubah -> Firebase menang
   }
  }
 
@@ -4642,9 +4737,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   const raw=snap.val();
   let P=parseRemote(raw), fromPayload=false;
   const first=!ready;
-  if(first&&!hasBase&&!COLS.some(c=>P.maps[c].size>0)&&raw&&validPayload(raw.payload)){
+  if(first&&!hasBase&&!MAINC.some(c=>P.maps[c].size>0)&&raw&&validPayload(raw.payload)){
    P=parseRemote(raw.payload);fromPayload=true;       // migrasi dari mims/payload
-   COLS.forEach(c=>{rewrite[c]=true});                // tulis semua koleksi ke format per-record
+   MAINC.forEach(c=>{rewrite[c]=true});               // tulis koleksi utama ke format per-record (images menyusul lewat jalurnya)
   }
   lastP=P;
   if(first){prepareFirst(P);ready=true}
@@ -4652,9 +4747,10 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   const r=merge(P);
   if(r.adopted){save();refreshUI();if(!first)try{toast('Data diperbarui dari perangkat lain')}catch(e){}}
   if(fromPayload)try{toast('Data dari mims/payload dipindahkan ke format per-record')}catch(e){}
-  if(r.pushNeeded||COLS.some(c=>rewrite[c]))schedulePush(first?0:400);
+  if(r.pushNeeded||cols().some(c=>rewrite[c]))schedulePush(first?0:400);
   scheduleSaveBase();
   refreshStatus();
+  if(first)startImagesLater();   // Update 41: gambar diunduh setelah data utama siap
  }
  /* Optimasi B: snapshot pertama langsung diproses; event berikutnya yang datang berdekatan
     digabung (hanya yang terakhir diproses setelah 300 ms) sehingga parse+merge seluruh data tidak diulang-ulang. */
@@ -4679,7 +4775,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  /** Menyusun update atomik berisi record yang berbeda dari base. sent = [koleksi, kunci, hash|undefined]. */
  function buildUpdates(){
   const updates={}, sent=[];
-  COLS.forEach(c=>{
+  cols().forEach(c=>{
    const L=localMap(c), B=base[c];
    ensureSeq(c,L);
    const bulk=rewrite[c]||(B.size===0&&L.size>=50&&lastP&&lastP.maps[c].size===0);
@@ -4703,8 +4799,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  async function doPush(){
   if(!ready||!db)return;
   if(pushing){again=true;return}
+  const cs=cols();                                    // Update 41: koleksi yang ikut dikirim pada putaran ini
   const {updates,sent}=buildUpdates();
-  if(!sent.length){lsDel(DIRTY_KEY);refreshStatus();return}
+  if(!sent.length){if(imgReady)lsDel(DIRTY_KEY);refreshStatus();return}
   pushing=true;refreshStatus();
   try{
    await fb.update(fb.ref(db),updates);
@@ -4712,7 +4809,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    // Dipisah & dibungkus catch supaya bila Rules mims_meta belum diizinkan, sinkron data utama tidak ikut gagal.
    fb.update(fb.ref(db),{'mims_meta/_sync':{at:fb.serverTimestamp(),by:(typeof currentUser!=='undefined'&&currentUser)||'-',device:deviceId()}}).catch(()=>{});
    sent.forEach(([c,k,h])=>{if(h===undefined)base[c].delete(k);else base[c].set(k,h)});
-   COLS.forEach(c=>{rewrite[c]=false});
+   cs.forEach(c=>{rewrite[c]=false});
    errMsg='';
   }catch(e){
    console.error('[MIMS] Gagal mengirim ke Firebase:',e);
@@ -4786,9 +4883,13 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  /* ---------- Koneksi ---------- */
  async function loadSdk(){
   const [a,d,u]=await Promise.all([import(SDK+'firebase-app.js'),import(SDK+'firebase-database.js'),import(SDK+'firebase-auth.js')]);
-  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,update:d.update,set:d.set,remove:d.remove,onDisconnect:d.onDisconnect,serverTimestamp:d.serverTimestamp,
+  return {initializeApp:a.initializeApp,getDatabase:d.getDatabase,ref:d.ref,onValue:d.onValue,get:d.get,update:d.update,set:d.set,remove:d.remove,onDisconnect:d.onDisconnect,serverTimestamp:d.serverTimestamp,
           getAuth:u.getAuth,signInAnonymously:u.signInAnonymously};
  }
+
+ /* Update 41: unduh+evaluasi SDK dimulai SEGERA saat script ini dimuat (paralel dengan pembacaan data lokal), bukan menunggu boot selesai. */
+ let sdkP=null;
+ const startSdk=()=>sdkP||(sdkP=loadSdk());
 
  const dlogs=[];
  function dlog(step,msg){dlogs.push(new Date().toTimeString().slice(0,8)+'  '+step+': '+msg);if(dlogs.length>60)dlogs.shift()}
@@ -4805,8 +4906,9 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
  }
 
  async function connect(){
+  const baseP=baseGet();                            // Update 41: baca base lokal paralel dengan pemuatan SDK
   try{
-   fb=await loadSdk();
+   fb=await startSdk();
    dlog('Muat SDK','berhasil');
   }catch(e){
    dlog('Muat SDK','GAGAL - '+((e&&(e.code||e.message))||e));
@@ -4823,7 +4925,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
    console.error('[MIMS] Inisialisasi Firebase gagal:',e);
    fb=null;errMsg='inisialisasi gagal ('+hint(e)+')';refreshStatus();return;
   }
-  const saved=await baseGet();
+  const saved=await baseP;
   if(saved){
    COLS.forEach(c=>{base[c]=new Map(Object.entries(saved.cols[c]||{}))});
    hasBase=true;
@@ -4839,7 +4941,60 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   fb.onValue(fb.ref(db,'.info/connected'),s=>{connected=!!s.val();dlog('Koneksi RTDB',connected?'tersambung':'terputus');refreshStatus();if(connected)presSync()});
   fb.onValue(fb.ref(db,'.info/serverTimeOffset'),s=>{presOffset=Number(s.val())||0;renderOnline()},()=>{});
   fb.onValue(fb.ref(db,PRES_PATH),s=>{presRemote=s.val()||{};renderOnline()},()=>{});   // Akun Online (gagal diam-diam bila Rules belum mengizinkan)
-  fb.onValue(fb.ref(db,ROOT),onSnapDebounced,onErr);   // Optimasi B: event beruntun digabung
+  startMainListeners();                                // Optimasi B + Update 41: koleksi utama didengarkan per koleksi, images menyusul
+  refreshStatus();
+ }
+
+ /* ---------- Update 41: listener per koleksi (tanpa images) + images belakangan ---------- */
+ const MAIN=MAINC;
+ const parts={};                                      // parts[c] = nilai terakhir node mims/<c> dari Firebase
+ function startMainListeners(){
+  let got=0, gated=false;
+  const mkRaw=()=>Object.assign({},parts);            // bentuk sama dengan snapshot mims lama: {items:..., tx:..., payload?:...}
+  const fire=async()=>{
+   // Migrasi lama: bila belum ada data per-record sama sekali, cek mims/payload (sekali saja)
+   if(!ready&&!hasBase&&MAIN.every(c=>!parts[c])){
+    try{const s=await fb.get(fb.ref(db,ROOT+'/payload'));parts.payload=s.val()}catch(e){}
+   }
+   onSnapDebounced({val:mkRaw});
+  };
+  MAIN.forEach(c=>{
+   let first=true;
+   fb.onValue(fb.ref(db,ROOT+'/'+c),s=>{
+    parts[c]=s.val();
+    if(first){first=false;got++}
+    if(got<MAIN.length)return;                        // tunggu snapshot pertama SEMUA koleksi utama
+    if(!gated){gated=true;fire();return}
+    onSnapDebounced({val:mkRaw});
+   },onErr);
+  });
+ }
+ /** Mulai mendengarkan images sedikit setelah sinkron awal (saat browser idle), agar tidak menghambat pemakaian awal. */
+ function startImagesLater(){
+  if(imgStarted)return;
+  imgStarted=true;
+  const go=()=>startImages();
+  if('requestIdleCallback' in window)requestIdleCallback(go,{timeout:2500});else setTimeout(go,1200);
+ }
+ let imgRaw=null, imgTimer=null;
+ function startImages(){
+  if(!fb||!db)return;
+  let first=true;
+  fb.onValue(fb.ref(db,ROOT+'/images'),s=>{
+   imgRaw=s.val();
+   if(first){first=false;onImgSnap(true);return}
+   clearTimeout(imgTimer);
+   imgTimer=setTimeout(()=>onImgSnap(false),300);
+  },onErr);
+ }
+ function onImgSnap(first){
+  const P=parseRemote({images:imgRaw});
+  if(first){imgReady=true;prepareFirst(P,['images'])}
+  if(lastP)lastP.maps.images=P.maps.images;           // buildUpdates() memakai lastP untuk mendeteksi node kosong
+  const r=merge(P,['images']);
+  if(r.adopted){save();refreshUI();if(!first)try{toast('Gambar diperbarui dari perangkat lain')}catch(e){}}
+  if(r.pushNeeded||rewrite.images)schedulePush(first?0:400);
+  scheduleSaveBase();
   refreshStatus();
  }
 
@@ -4905,6 +5060,7 @@ load().catch(e=>console.error('[MIMS] Gagal memuat data:',e)).then(()=>{
   refreshStatus();
   connect();
  };
+ startSdk().catch(()=>{});                             // Update 41: mulai memuat SDK sekarang; kegagalan ditangani di connect()
  // Saat koneksi internet pulih, coba kirim lagi perubahan yang tertunda.
  window.addEventListener('online',()=>{if(ready)schedulePush(0)});
  if(window.__mimsDataReady)window.mimsFbStart();
