@@ -2352,7 +2352,7 @@ function drawRecentBody(){
    Data     : S.reqs (draft), S.reqForms (form jadi). Nomor dokumen "PR-MNT/YYYYMMDD/NN".
    Alur     : tambah barang manual (addReqItem) atau "auto-input" barang kritis (autoInputCritical)
               -> ubah jumlah/catatan -> "Buat Form PR" (createReqFormFromDraft) -> draft dikosongkan,
-              form masuk tab Proses Request; opsional langsung cetak PDF (printReqFormPDF).
+              form masuk tab Proses Request; Ekspor PDF hanya mencetak draft (expReqPDF); tidak memindahkan daftar.
    Aturan   : barang yang sudah tercakup PR berjalan diberi peringatan / dilewati saat auto-input.
    Cara ubah: Format nomor PR -> nextPrDocNo(). Tampilan cetak PR -> printReqFormPDF().
    ========================================================================== */
@@ -2382,13 +2382,13 @@ function vReq(){
  return `<div class="page-head">
   <div>
    <h2>🛒 Request Sparepart (Buat Form Pengajuan)</h2>
-   <p class="page-subtitle">Susun daftar suku cadang yang ingin dipesan. Saat diekspor atau diajukan, daftar ini akan otomatis masuk ke tab <b>⏳ Proses Request</b>.</p>
+   <p class="page-subtitle">Susun daftar suku cadang yang ingin dipesan. Ekspor PDF hanya mencetak draft. Daftar masuk ke tab <b>⏳ Proses Request</b> hanya setelah klik <b>📋 Simpan ke Proses Request</b>.</p>
   </div>
   <div class="page-actions">
    <button class="btn p" onclick="autoInputCritical()">⚡ Auto Input Stok Kritis & Habis</button>
    ${S.reqs.length?`<button class="btn d" onclick="clearReqs()">${pend==='clr_req'?'Yakin Kosongkan?':'🗑️ Kosongkan Daftar'}</button>`:''}
    <button class="btn ok" onclick="submitReqToProcess(false)">📋 Simpan ke Proses Request</button>
-   <button class="btn p" onclick="expReqPDF()">🖨️ Ekspor (PDF) & Ajukan</button>
+   <button class="btn p" onclick="expReqPDF()">🖨️ Ekspor (PDF)</button>
   </div>
  </div>
 
@@ -2424,7 +2424,7 @@ function vReq(){
    <div><h3 style="margin:0 0 7px">📋 Draft Daftar Sparepart yang Akan Dipesan (${S.reqs.length} Item)</h3><label for="reqSortSelect">Urutkan daftar</label> <select id="reqSortSelect" onchange="reqSort=this.value;render()"><option value="typeSku" ${reqSort==='typeSku'?'selected':''}>Tipe Sparepart, lalu Kode</option><option value="sku" ${reqSort==='sku'?'selected':''}>Kode A–Z</option></select></div>
    <div style="display:flex;gap:8px">
     <button class="btn ok s" onclick="submitReqToProcess(false)">📋 Simpan ke Proses Request</button>
-    <button class="btn p s" onclick="expReqPDF()">🖨️ Ekspor (PDF) & Ajukan</button>
+    <button class="btn p s" onclick="expReqPDF()">🖨️ Ekspor (PDF)</button>
    </div>
   </div>
   <div class="tw">
@@ -2444,7 +2444,7 @@ function vReq(){
     <tbody>${rows}</tbody>
    </table>
   </div>
-  <div class="table-meta">Tips: Setelah selesai menyusun daftar pesanan, klik <b>🖨️ Ekspor (PDF) & Ajukan</b> untuk mencetak PDF sekaligus memindahkan form ini ke tab <b>⏳ Proses Request</b> untuk pemantauan kedatangan barang.</div>
+  <div class="table-meta">Tips: Ekspor (PDF) hanya untuk dicetak dan diajukan ke atasan; daftar tetap bisa diubah. Setelah daftar final, klik <b>📋 Simpan ke Proses Request</b> untuk memindahkannya ke tab <b>⏳ Proses Request</b>.</div>
  </div>`;
 }
 
@@ -2595,6 +2595,27 @@ function nextPrDocNo(){
  return prefix+String(maxSeq+1).padStart(2,'0');
 }
 
+/** Mengubah draft (S.reqs) menjadi daftar item Form PR. Dipakai Simpan ke Proses Request dan cetak draft PDF. */
+function draftItemsFromReqs(){
+ return S.reqs.map(r=>{
+  const it=findById(r.itemId);
+  const curStock=it?it.stock:(r.stockSnapshot??0);
+  let noteText=r.note||'';
+  if(curStock<=0&&(!noteText||noteText==='Restock Stok Habis (0)'))noteText='Stok Habis';
+  return {
+   id:uid(),
+   itemId:r.itemId,
+   sku:it?it.sku:(r.sku||'-'),
+   name:it?it.name:(r.name||'-'),
+   stockSnapshot:curStock,
+   qty:Number(r.qty)||1,
+   unit:it?it.unit:(r.unit||'pcs'),
+   note:noteText,
+   received:false
+  };
+ });
+}
+
 /** Mengubah draft menjadi Form PR baru di S.reqForms, mengosongkan draft, dan membuka form itu di Proses Request. */
 function createReqFormFromDraft(){
  if(!Array.isArray(S.reqForms))S.reqForms=[];
@@ -2604,23 +2625,7 @@ function createReqFormFromDraft(){
   docNo,
   date:today(),
   time:wibTime(),
-  items:S.reqs.map(r=>{
-   const it=findById(r.itemId);
-   const curStock=it?it.stock:(r.stockSnapshot??0);
-   let noteText=r.note||'';
-   if(curStock<=0&&(!noteText||noteText==='Restock Stok Habis (0)'))noteText='Stok Habis';
-   return {
-    id:uid(),
-    itemId:r.itemId,
-    sku:it?it.sku:(r.sku||'-'),
-    name:it?it.name:(r.name||'-'),
-    stockSnapshot:curStock,
-    qty:Number(r.qty)||1,
-    unit:it?it.unit:(r.unit||'pcs'),
-    note:noteText,
-    received:false
-   };
-  })
+  items:draftItemsFromReqs()
  };
  S.reqForms.unshift(newForm);
  S.reqs=[];
@@ -2640,9 +2645,10 @@ function submitReqToProcess(alsoPrint){
  go('proc');
 }
 
-/** Buat Form PR sekaligus cetak PDF-nya. */
+/** Cetak draft daftar sparepart ke PDF saja. Tidak membuat Form PR dan tidak memindahkan daftar ke Proses Request. */
 function expReqPDF(){
- submitReqToProcess(true);
+ if(!S.reqs||!S.reqs.length)return toast('Daftar pesanan masih kosong! Tambahkan sparepart terlebih dahulu.');
+ printReqFormPDF({docNo:'DRAFT (belum diajukan)',date:today(),time:wibTime(),items:draftItemsFromReqs()});
 }
 
 /** Cetak PDF Form PR (berjalan atau arsip) berdasarkan id. */
