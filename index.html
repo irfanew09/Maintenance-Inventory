@@ -3,7 +3,7 @@
 ==========================================================================
  MIMS - Maintenance Inventory Management System
  Dashboard Maintenance (satu file HTML, berjalan offline)
- Versi dokumen : Update 42 - Saran nama barang Request Sparepart lebih panjang & jelas
+ Versi dokumen : Update 43 - Optimasi penyimpanan (debounce save) & indeks gambar; dokumen diperbarui
 ==========================================================================
 
  DAFTAR ISI DOKUMEN INI
@@ -267,16 +267,24 @@
  1. Kata sandi tiga akun sama (123) dan tertulis di dalam kode; hanya cocok untuk
     pembatas peran di PC internal, bukan keamanan sungguhan.
  2. Data utama ada di IndexedDB browser DAN disinkronkan ke Firebase (bagian [22]). Tetap rutin backup.
- 3. inventoryInsights() masih menghitung daftar "inactive" (barang tanpa
-    pergerakan 90 hari) walau kartunya sudah tidak tampil di Dashboard.
+ 3. inventoryInsights() kini hanya menghitung "usage" untuk kartu Barang Paling Sering Dipakai.
+    Daftar "inactive" sudah dihapus (diverifikasi pada Update 43).
  4. Sinkronisasi antar komputer lewat Firebase: bila dua perangkat mengubah RECORD yang sama bersamaan,
     yang terakhir menyimpan menang (record berbeda aman). Firebase memakai login anonim; batasi akses lewat Firebase Rules (auth != null).
  5. Penyimpanan localStorage memiliki batas kapasitas browser; lakukan Export
     JSON berkala, terutama sebelum Import atau perubahan data besar.
+ 6. Penulisan IndexedDB ditunda 200 ms (debounce, Update 43) dan langsung dijalankan saat tab
+    disembunyikan atau ditutup. Browser yang dimatikan paksa tepat dalam jeda itu dapat kehilangan
+    perubahan terakhir; pastikan Export JSON / Auto Backup berjalan rutin.
 
 ==========================================================================
  11. RIWAYAT PERUBAHAN
 ==========================================================================
+ Update 43 : Optimasi performa (tanpa mengubah data/fitur).
+             save(): stringify + tulis IndexedDB sekarang ditunda 200 ms dan digabung (flushDataSave), dijalankan segera saat
+             tab disembunyikan/ditutup. qSave() (localStorage), Auto Backup dan sinkron Firebase tetap langsung dipanggil.
+             imgSrc(): pencarian gambar memakai indeks Map (imgIndex()) dengan cadangan pencarian linear.
+             Dokumen: versi, catatan hutang #3 (inventoryInsights) diperbarui, catatan #6 (penulisan tertunda) ditambahkan.
  Update 42 : Request Sparepart: saran nama barang kini daftar lebar (nama + kode lengkap, stok, status, penanda sudah di draft/PR)
              menggantikan datalist bawaan browser yang memotong teks. Fungsi baru: reqSugOpen/reqSugPick/reqSugKey/reqSugClose.
  Update 41 : Optimasi performa (tanpa mengubah data/fitur).
@@ -1112,26 +1120,35 @@ function setSaveState(ok){
 }
 
 /** Menyimpan seluruh S ke IndexedDB lalu menjadwalkan Auto Backup. Panggil setiap selesai mengubah data. */
-let saveQueued=false;   // Update 41: beberapa save() berturut-turut dalam satu proses digabung menjadi SATU stringify + SATU tulis IndexedDB
+let saveQueued=false;   // Update 41: beberapa save() berturut-turut digabung menjadi SATU stringify + SATU tulis IndexedDB
+let saveTimer=null;     // Update 43: penulisan ditunda SAVE_DEBOUNCE_MS agar klik/entri beruntun tidak men-stringify seluruh data berulang kali
+const SAVE_DEBOUNCE_MS=200;
+function flushDataSave(){
+ if(!saveQueued)return;
+ saveQueued=false;
+ if(saveTimer){clearTimeout(saveTimer);saveTimer=null}
+ let json;
+ try{json=JSON.stringify(S)}catch(e){console.error('[MIMS] Gagal menyusun data:',e);setSaveState(false);return}
+ saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
+  console.error('[MIMS] Gagal menyimpan data:',e);
+  setSaveState(false);
+ });
+}
 function save(){
  dataVer++;
  if(!saveQueued){
   saveQueued=true;
-  queueMicrotask(()=>{
-   saveQueued=false;
-   let json;
-   try{json=JSON.stringify(S)}catch(e){console.error('[MIMS] Gagal menyusun data:',e);setSaveState(false);return}
-   saveChain=saveChain.then(()=>dataPut(json)).then(()=>setSaveState(true)).catch(e=>{
-    console.error('[MIMS] Gagal menyimpan data:',e);
-    setSaveState(false);
-   });
-  });
+  if(saveTimer)clearTimeout(saveTimer);
+  saveTimer=setTimeout(flushDataSave,SAVE_DEBOUNCE_MS);
  }
  qSave();
  try{abSchedule()}catch(e){console.error('[MIMS] Gagal menjadwalkan backup:',e)}
  try{window.mimsFbPush&&window.mimsFbPush()}catch(e){console.error('[MIMS] Firebase:',e)}
  return true;
 }
+// Update 43: tulis tertunda segera dijalankan saat tab disembunyikan / ditutup agar tidak ada perubahan yang tertinggal.
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='hidden')flushDataSave()});
+window.addEventListener('pagehide',flushDataSave);
 
 /* ==========================================================================
    [07] HELPER DOMAIN (status stok, pencarian, hitungan bersama)
@@ -1856,7 +1873,21 @@ function drawTable(){
 /* ---------- Gambar sparepart ---------- */
 /** Hanya data-URL gambar base64 yang dirender (data dari Firebase dianggap tidak tepercaya). */
 const IMG_RE=/^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+\/=]+$/;
-const imgSrc=id=>{const x=(S.images||[]).find(v=>v.id===id);return x&&IMG_RE.test(String(x.data||''))?x.data:''};
+/* Update 43: indeks gambar (Map) dibangun ulang hanya saat data berubah; bila tidak ketemu dicari linear (aman). */
+let _imgMap=null,_imgArr=null,_imgLen=-1,_imgVer=-1;
+function imgIndex(){
+ const a=S.images||[];
+ if(_imgMap&&_imgArr===a&&_imgLen===a.length&&_imgVer===dataVer)return _imgMap;
+ const m=new Map();
+ for(const x of a)if(x&&!m.has(x.id))m.set(x.id,x);
+ _imgMap=m;_imgArr=a;_imgLen=a.length;_imgVer=dataVer;
+ return m;
+}
+const imgSrc=id=>{
+ let x=imgIndex().get(id);
+ if(!x||x.id!==id)x=(S.images||[]).find(v=>v.id===id);
+ return x&&IMG_RE.test(String(x.data||''))?x.data:'';
+};
 
 /** Memperkecil gambar (sisi terpanjang maks. 640 px) dan mengubahnya ke JPEG agar ringan disimpan & disinkronkan. */
 function compressImage(file,maxSide=640,q=0.72){
